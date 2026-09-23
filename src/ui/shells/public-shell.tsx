@@ -8,7 +8,7 @@ const links = [
   ["Bantuan", "/help"],
 ] as const;
 
-export function DesktopHeader() {
+export function DesktopHeader({ state = "guest" }: { state?: "guest" | "customer" }) {
   return (
     <header className="desktop-header">
       <PageWidth className="desktop-header__inner">
@@ -22,8 +22,8 @@ export function DesktopHeader() {
           <input id="header-query" name="q" placeholder="Cari produk digital..." />
           <button type="submit" aria-label="Cari">↵</button>
         </form>
-        <Link className="header-login" href="/reseller-program">Program Reseller</Link>
-        <button className="header-login header-login--disabled" type="button" disabled aria-label="Masuk belum tersedia">Masuk</button>
+        {state === "guest" ? <Link className="header-login" href="/reseller-program">Program Reseller</Link> : <Link className="header-login" href="/account/orders">Pesanan</Link>}
+        <Link className="header-login header-account-link" href={state === "customer" ? "/account" : "/auth/sign-in"}>{state === "customer" ? "Akun" : "Masuk"}</Link>
       </PageWidth>
     </header>
   );
@@ -42,15 +42,20 @@ const guestItems = [
   ["⌂", "Beranda", "/"], ["⌕", "Belanja", "/shop"], ["％", "Promo", "/promos"], ["?", "Bantuan", "/help"],
 ] as const;
 
-export function BottomNavigation({ active = "" }: { active?: string }) {
+const customerItems = [
+  ["⌂", "Beranda", "/"], ["⌕", "Belanja", "/shop"], ["％", "Promo", "/promos"], ["▤", "Pesanan", "/account/orders"], ["◉", "Akun", "/account"],
+] as const;
+
+export function BottomNavigation({ active = "", state = "guest" }: { active?: string; state?: "guest" | "customer" }) {
+  const items = state === "customer" ? customerItems : guestItems;
   return (
     <nav className="bottom-navigation" aria-label="Navigasi bawah">
-      {guestItems.map(([icon, label, href]) => (
+      {items.map(([icon, label, href]) => (
         <Link aria-current={active === href ? "page" : undefined} className={active === href ? "bottom-navigation__item is-active" : "bottom-navigation__item"} href={href} key={label}>
           <span className="bottom-navigation__icon" aria-hidden="true">{icon}</span><span>{label}</span>
         </Link>
       ))}
-      <button className="bottom-navigation__item" type="button" disabled aria-label="Masuk belum tersedia"><span className="bottom-navigation__icon" aria-hidden="true">↗</span><span>Masuk</span></button>
+      {state === "guest" && <Link className="bottom-navigation__item" href="/auth/sign-in"><span className="bottom-navigation__icon" aria-hidden="true">↗</span><span>Masuk</span></Link>}
     </nav>
   );
 }
@@ -69,6 +74,6 @@ export function PublicFooter() {
   );
 }
 
-export function PublicShell({ children }: { children: React.ReactNode }) {
-  return <><DesktopHeader /><MobileTopBar /><div className="public-content">{children}</div><PublicFooter /><BottomNavigation /></>;
+export function PublicShell({ children, state = "guest" }: { children: React.ReactNode; state?: "guest" | "customer" }) {
+  return <><DesktopHeader state={state} /><MobileTopBar /><div className="public-content">{children}</div><PublicFooter /><BottomNavigation state={state} /></>;
 }
