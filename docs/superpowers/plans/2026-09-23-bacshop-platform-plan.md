@@ -28,6 +28,43 @@
 - A changed SKU price is surfaced for reconciliation instead of silently charging the browser total; test stale checkout input.
 - Mobile state/navigation never exposes account or reseller destinations to a Guest; test Guest, Customer, and Reseller Center mappings.
 
+### Task 1: Runnable foundation and protected pricing domain
+
+**Files:**
+- Create: `package.json`, `tsconfig.json`, `next.config.ts`, `vitest.config.ts`, `.env.example`
+- Create: `app/layout.tsx`, `app/page.tsx`, `app/globals.css`
+- Create: `src/domain/access/types.ts`, `src/domain/catalog/types.ts`, `src/domain/pricing/price-resolver.ts`, `src/domain/pricing/price-resolver.test.ts`
+- Create: `src/infrastructure/catalog/seed-catalog.ts`, `src/infrastructure/catalog/catalog-repository.ts`
+- Create: `src/application/access/resolve-access-context.ts`, `src/application/catalog/get-retail-catalog.ts`, `src/application/reseller/get-reseller-catalog.ts`
+- Modify: `.gitignore`
+
+**Interfaces:**
+- `resolveAccessContext(input): AccessContext` returns only the caller-authorized commercial context.
+- `resolvePrice(sku, context): RetailPrice | ResellerPrice` rejects reseller context unless the context is an approved reseller explicitly inside `reseller-center`.
+- `getRetailCatalog(query): RetailCatalogItem[]` never serializes reseller price fields.
+- `getResellerCatalog(context, query): ResellerCatalogItem[]` requires an approved reseller context and returns authorized tier prices only.
+
+- [ ] **Step 1: Scaffold the runnable Next.js TypeScript project and scripts.**
+- [ ] **Step 2: Write failing access and price-isolation tests.**
+- [ ] **Step 3: Run the focused tests and verify the expected failures.**
+- [ ] **Step 4: Implement the minimal typed domain/application services and deterministic seed catalog.**
+- [ ] **Step 5: Run focused tests, then lint, typecheck, and build.**
+- [ ] **Step 6: Commit with `feat: establish Bacshop application foundation`.**
+
+### Task 2: Public commerce shell and responsive primitives
+
+**Files:**
+- Create/modify: `app/`, `src/ui/foundations/`, `src/ui/commerce/`, `src/ui/shells/`, `src/ui/states/`, `src/infrastructure/catalog/`
+- Test: `src/ui/**/*.test.tsx`, `tests/catalog-navigation.test.ts`
+
+**Interfaces:** Consume Task 1 retail catalog view models; do not move access or price resolution into components.
+
+- [ ] **Step 1: Add failing tests for state-correct navigation and retail-only product cards.**
+- [ ] **Step 2: Implement semantic tokens, desktop header, mobile top bar, bottom navigation, search, category/promo cards, catalog, PDP, and state primitives.**
+- [ ] **Step 3: Implement public routes and catalog recovery states.**
+- [ ] **Step 4: Run tests, lint, typecheck, build, and matched-viewport browser checks.**
+- [ ] **Step 5: Commit with `feat: implement Bacshop public commerce shell`.**
+
 ### Phase 0: Runnable foundation
 
 - [ ] Scaffold the Next.js TypeScript application without overwriting the authoritative docs.
