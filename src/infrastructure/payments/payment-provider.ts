@@ -31,3 +31,18 @@ export class DevelopmentPaymentProvider implements PaymentProvider {
     return { providerReference: `dev-${request.idempotencyKey}`, redirectUrl: `/account/orders/${encodeURIComponent(request.orderReference)}?payment=pending` };
   }
 }
+
+/** Development-only callback verifier. Production adapters must verify provider signatures. */
+export class DevelopmentPaymentCallbackVerifier implements PaymentCallbackVerifier {
+  async verifyCallback(request: Request): Promise<VerifiedPaymentCallback | null> {
+    if (request.headers.get("x-bacshop-dev-signature") !== "dev-only") return null;
+    try {
+      const payload = await request.json() as Partial<VerifiedPaymentCallback>;
+      if (typeof payload.eventId !== "string" || typeof payload.orderReference !== "string") return null;
+      if (payload.status !== "paid" && payload.status !== "failed" && payload.status !== "expired") return null;
+      return { eventId: payload.eventId, orderReference: payload.orderReference, status: payload.status };
+    } catch {
+      return null;
+    }
+  }
+}
