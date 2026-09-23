@@ -25,6 +25,19 @@ describe("protected catalog pricing", () => {
     expect("resellerPrices" in catalog[0]).toBe(false);
   });
 
+  it("keeps approved reseller-center contexts on retail pricing in the retail catalog", async () => {
+    const context: AccessContext = {
+      kind: "reseller-approved",
+      userId: "reseller-1",
+      tier: "silver",
+      surface: "reseller-center",
+    };
+
+    const catalog = await getRetailCatalog(context);
+
+    expect(catalog[0].retailPrice).toBe(89000);
+  });
+
   it("rejects reseller catalog access for guest, pending, suspended, and retail contexts", async () => {
     const unauthorizedContexts: AccessContext[] = [
       { kind: "guest" },
@@ -57,6 +70,17 @@ describe("protected catalog pricing", () => {
     const admin: AccessContext = { kind: "admin", userId: "admin-1" };
 
     expect(resolvePrice(sku, admin)).toBe(89000);
+  });
+
+  it("rejects admin reseller-catalog access while preserving admin retail catalog pricing", async () => {
+    const admin: AccessContext = { kind: "admin", userId: "admin-1" };
+
+    await expect(getResellerCatalog(admin)).rejects.toThrow(/unauthorized/i);
+    const retailCatalog = await getRetailCatalog(admin);
+    expect(retailCatalog[0]).toMatchObject({
+      sku: sku.sku,
+      retailPrice: sku.retailPrice,
+    });
   });
 
   it("rejects absent and invalid access contexts instead of exposing reseller data", () => {

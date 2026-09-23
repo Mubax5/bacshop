@@ -1,6 +1,5 @@
 import { assertAccessContext, type AccessContext } from "@/domain/access/types";
 import type { RetailCatalogItem } from "@/domain/catalog/types";
-import { resolvePrice } from "@/domain/pricing/price-resolver";
 import { SeedCatalogRepository } from "@/infrastructure/catalog/catalog-repository";
 
 export async function getRetailCatalog(
@@ -14,7 +13,7 @@ export async function getRetailCatalog(
     productName: sku.productName,
     duration: sku.duration,
     region: sku.region,
-    retailPrice: resolvePrice(sku, context),
+    retailPrice: sku.retailPrice,
     availability: sku.availability,
   }));
 }

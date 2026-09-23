@@ -50,3 +50,31 @@ This red run confirmed that the requested application boundary did not yet exist
 - The pre-implementation test run failed on an unresolved import before assertions could execute; this limitation is recorded rather than presented as a behavior-level red test.
 - Auth and payment adapters are contracts only. Authentication, provider credentials, database persistence, and payment execution are intentionally outside Task 1.
 - The complete audit reports a moderate path-traversal / arbitrary-file-read advisory in the development-only Vitest mocker dependency. Production dependencies audit cleanly. Updating Vitest to the available major-version fix should be reviewed separately for compatibility.
+
+## Fix round: retail catalog price isolation
+
+### Changes
+
+- Changed the retail catalog mapper to serialize `sku.retailPrice` directly after validating the access context. A reseller-center context can no longer pass through the reseller tier resolver and be relabeled as `retailPrice`.
+- Added regression coverage proving an approved silver reseller-center context receives retail pricing from the retail catalog.
+- Added admin access coverage proving admins are denied reseller-catalog reads while their retail-catalog reads retain retail pricing.
+
+### Test-first record
+
+Before the production change, ran:
+
+```text
+npm test -- src/domain/pricing/price-resolver.test.ts
+```
+
+Result: failed as expected. The reseller-center regression received `76000` where retail price `89000` was expected. The admin assertion initially had an overly strict matcher; it was corrected to assert the relevant first catalog item. After the production change, the same focused command passed: 1 test file, 7 tests.
+
+### Verification
+
+| Exact command | Result |
+|---|---|
+| `npm test -- src/domain/pricing/price-resolver.test.ts` | Pass: 1 test file, 7 tests |
+| `npm test` | Pass: 1 test file, 7 tests |
+| `npm run lint` | Pass |
+| `npm run typecheck` | Pass |
+| `npm run build` | Pass: production build completed; `/` and `/_not-found` statically prerendered |
