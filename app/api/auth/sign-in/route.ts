@@ -9,7 +9,7 @@ export async function POST(request: Request) {
   const session = await developmentAuthAdapter.authenticate(String(form.get("email") ?? ""), String(form.get("password") ?? ""));
   if (!session) return NextResponse.redirect(new URL(`/auth/sign-in?error=invalid&returnTo=${encodeURIComponent(returnTo)}`, request.url), 303);
   const response = NextResponse.redirect(new URL(returnTo, request.url), 303);
-  const token = session.userId === "customer-demo-1" ? "dev-customer-session" : `dev-session:${session.userId}`;
+  const token = session.role === "reseller-approved" ? "dev-reseller-approved" : session.userId === "customer-demo-1" ? "dev-customer-session" : `dev-session:${session.userId}`;
   response.cookies.set(SESSION_COOKIE, token, { httpOnly: true, sameSite: "lax", secure: process.env.NODE_ENV === "production", path: "/", maxAge: 60 * 60 * 24 * 7 });
   return response;
 }

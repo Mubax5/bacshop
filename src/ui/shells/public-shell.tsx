@@ -8,7 +8,7 @@ const links = [
   ["Bantuan", "/help"],
 ] as const;
 
-export function DesktopHeader({ state = "guest" }: { state?: "guest" | "customer" }) {
+export function DesktopHeader({ state = "guest", resellerApproved = false }: { state?: "guest" | "customer"; resellerApproved?: boolean }) {
   return (
     <header className="desktop-header">
       <PageWidth className="desktop-header__inner">
@@ -22,7 +22,7 @@ export function DesktopHeader({ state = "guest" }: { state?: "guest" | "customer
           <input id="header-query" name="q" placeholder="Cari produk digital..." />
           <button type="submit" aria-label="Cari">↵</button>
         </form>
-        {state === "guest" ? <Link className="header-login" href="/reseller-program">Program Reseller</Link> : <Link className="header-login" href="/account/orders">Pesanan</Link>}
+        {state === "guest" ? <Link className="header-login" href="/reseller-program">Program Reseller</Link> : <Link className="header-login" href={resellerApproved ? "/reseller" : "/account/orders"}>{resellerApproved ? "Reseller Center" : "Pesanan"}</Link>}
         <Link className="header-login header-account-link" href={state === "customer" ? "/account" : "/auth/sign-in"}>{state === "customer" ? "Akun" : "Masuk"}</Link>
       </PageWidth>
     </header>
@@ -74,6 +74,6 @@ export function PublicFooter() {
   );
 }
 
-export function PublicShell({ children, state = "guest" }: { children: React.ReactNode; state?: "guest" | "customer" }) {
-  return <><DesktopHeader state={state} /><MobileTopBar /><div className="public-content">{children}</div><PublicFooter /><BottomNavigation state={state} /></>;
+export function PublicShell({ children, state = "guest", resellerApproved = false }: { children: React.ReactNode; state?: "guest" | "customer"; resellerApproved?: boolean }) {
+  return <><DesktopHeader state={state} resellerApproved={resellerApproved} /><MobileTopBar /><div className="public-content">{children}</div><PublicFooter /><BottomNavigation state={state} /></>;
 }

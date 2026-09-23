@@ -3,6 +3,7 @@ import "@/ui/foundations/tokens.css";
 import "./globals.css";
 import { PublicShell } from "@/ui/shells/public-shell";
 import { getCustomerSession } from "@/application/auth/require-customer";
+import { getResellerIdentity } from "@/application/reseller/require-reseller";
 
 export const metadata: Metadata = {
   title: { default: "Bacshop — Produk digital, lebih jelas", template: "%s | Bacshop" },
@@ -10,10 +11,11 @@ export const metadata: Metadata = {
 };
 
 export default async function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
-  const session = await getCustomerSession();
+  const [session, resellerIdentity] = await Promise.all([getCustomerSession(), getResellerIdentity()]);
+  const resellerApproved = resellerIdentity?.status === "approved";
   return (
     <html lang="id">
-      <body><PublicShell state={session ? "customer" : "guest"}>{children}</PublicShell></body>
+      <body><PublicShell state={session || resellerApproved ? "customer" : "guest"} resellerApproved={resellerApproved}>{children}</PublicShell></body>
     </html>
   );
 }

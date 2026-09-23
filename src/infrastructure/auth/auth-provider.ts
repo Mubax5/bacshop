@@ -7,9 +7,10 @@ export interface AuthProvider {
 
 export interface CustomerSession {
   userId: string;
-  role: "customer";
+  role: "customer" | "reseller-approved";
   email: string;
   displayName: string;
+  resellerTier?: "bronze" | "silver" | "gold";
 }
 
 export interface CustomerAuthAdapter {
@@ -27,9 +28,17 @@ export class DevelopmentAuthAdapter implements CustomerAuthAdapter {
     email: "demo@bacshop.test",
     displayName: "Demo Customer",
   };
+  private readonly resellerSession: CustomerSession = {
+    userId: "reseller-demo-1",
+    role: "reseller-approved",
+    email: "reseller@bacshop.test",
+    displayName: "Demo Reseller",
+    resellerTier: "gold",
+  };
 
   async authenticate(email: string, password: string): Promise<CustomerSession | null> {
     const normalized = email.trim().toLowerCase();
+    if (normalized === "reseller@bacshop.test" && password === "bacshop-demo") return this.resellerSession;
     if (normalized === "demo@bacshop.test" && password === "bacshop-demo") return this.session;
     const registered = this.registrations.get(normalized);
     return registered?.password === password ? registered.session : null;
@@ -45,6 +54,7 @@ export class DevelopmentAuthAdapter implements CustomerAuthAdapter {
 
   async readSession(token: string | undefined): Promise<CustomerSession | null> {
     if (token === "dev-customer-session") return this.session;
+    if (token === "dev-reseller-approved") return this.resellerSession;
     return [...this.registrations.values()].map(({ session }) => session).find((session) => token === `dev-session:${session.userId}`) ?? null;
   }
 }
