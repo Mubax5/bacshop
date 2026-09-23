@@ -20,12 +20,17 @@ describe("public commerce shell", () => {
 
     stylesheet.walkAtRules("media", (media) => {
       if (media.params !== "(max-width: 760px)") return;
-      media.walkRules((rule) => mobileRules.push(rule));
+      media.walkRules((rule) => {
+        mobileRules.push(rule);
+      });
     });
 
     const minimumHeightFor = (selector: string) => {
       const rule = mobileRules.find((candidate) => candidate.selector === selector);
-      return Number.parseInt(rule?.nodes?.find((node) => node.type === "decl" && node.prop === "min-height")?.value ?? "0", 10);
+      const declaration = rule?.nodes?.find(
+        (node): node is postcss.Declaration => node.type === "decl" && node.prop === "min-height",
+      );
+      return Number.parseInt(declaration?.value ?? "0", 10);
     };
 
     expect(minimumHeightFor(".quick-filter")).toBeGreaterThanOrEqual(44);
