@@ -1,11 +1,7 @@
-export default function HomePage() {
-  return (
-    <main className="foundation">
-      <p className="eyebrow">Digital products, made clear</p>
-      <h1>Bacshop</h1>
-      <p className="description">
-        A trusted place for digital subscriptions, software, and gift cards.
-      </p>
-    </main>
-  );
+import { getRetailCatalog } from "@/application/catalog/get-retail-catalog";
+import { HomeSurface } from "@/ui/commerce/public-pages";
+
+export default async function HomePage() {
+  const items = await getRetailCatalog({ kind: "guest" });
+  return <HomeSurface items={items} />;
 }
