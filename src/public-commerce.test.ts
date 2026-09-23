@@ -1,5 +1,8 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import postcss from "postcss";
 import { describe, expect, it } from "vitest";
 import { getRetailCatalog } from "@/application/catalog/get-retail-catalog";
 import { getRetailProductDetails } from "@/application/catalog/get-retail-product-details";
@@ -11,6 +14,27 @@ import { BottomNavigation } from "@/ui/shells/public-shell";
 import { EmptyState } from "@/ui/states/commerce-states";
 
 describe("public commerce shell", () => {
+  it("keeps mobile catalog controls at 44px without changing the two-column grid", () => {
+    const stylesheet = postcss.parse(readFileSync(join(process.cwd(), "app/globals.css"), "utf8"));
+    const mobileRules: postcss.Rule[] = [];
+
+    stylesheet.walkAtRules("media", (media) => {
+      if (media.params !== "(max-width: 760px)") return;
+      media.walkRules((rule) => mobileRules.push(rule));
+    });
+
+    const minimumHeightFor = (selector: string) => {
+      const rule = mobileRules.find((candidate) => candidate.selector === selector);
+      return Number.parseInt(rule?.nodes?.find((node) => node.type === "decl" && node.prop === "min-height")?.value ?? "0", 10);
+    };
+
+    expect(minimumHeightFor(".quick-filter")).toBeGreaterThanOrEqual(44);
+    expect(minimumHeightFor(".product-card__action")).toBeGreaterThanOrEqual(44);
+    expect(mobileRules.find((rule) => rule.selector === ".product-grid")?.nodes).toContainEqual(
+      expect.objectContaining({ prop: "grid-template-columns", value: "repeat(2, minmax(0, 1fr))" }),
+    );
+  });
+
   it("shows the Guest bottom navigation labels", () => {
     const markup = renderToStaticMarkup(createElement(BottomNavigation));
 
