@@ -1,10 +1,10 @@
 import { assertAccessContext, type AccessContext } from "@/domain/access/types";
 import type { RetailCatalogItem } from "@/domain/catalog/types";
-import { SeedCatalogRepository } from "@/infrastructure/catalog/catalog-repository";
+import { developmentCatalogRepository, type CatalogRepository } from "@/infrastructure/catalog/catalog-repository";
 
 export async function getRetailCatalog(
   context: AccessContext | undefined,
-  repository = new SeedCatalogRepository(),
+  repository: CatalogRepository = developmentCatalogRepository,
 ): Promise<RetailCatalogItem[]> {
   assertAccessContext(context);
   const skus = await repository.listSkus();

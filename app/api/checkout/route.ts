@@ -3,8 +3,9 @@ import { NextResponse } from "next/server";
 import { getCustomerSession } from "@/application/auth/require-customer";
 import { prepareRetailCheckout } from "@/application/checkout/prepare-retail-checkout";
 import { developmentSessionCart, reconcileRetailCart } from "@/infrastructure/cart/session-cart-repository";
-import { SeedCatalogRepository } from "@/infrastructure/catalog/catalog-repository";
+import { developmentCatalogRepository } from "@/infrastructure/catalog/catalog-repository";
 import { developmentRetailOrders } from "@/infrastructure/orders/retail-order-repository";
+import { developmentNotifications } from "@/infrastructure/notifications/notification-repository";
 import { DevelopmentPaymentProvider } from "@/infrastructure/payments/payment-provider";
 
 export async function POST(request: Request) {
@@ -16,7 +17,7 @@ export async function POST(request: Request) {
   const sessionId = request.headers.get("cookie")?.match(/(?:^|;\s*)bacshop-cart-session=([a-zA-Z0-9-]+)/)?.[1];
   if (!sessionId) return NextResponse.redirect(new URL("/cart", request.url), 303);
   const cart = await reconcileRetailCart(developmentSessionCart, sessionId);
-  const checkout = await prepareRetailCheckout({ lines: cart.lines, clientTotal, catalog: new SeedCatalogRepository() });
+  const checkout = await prepareRetailCheckout({ lines: cart.lines, clientTotal, catalog: developmentCatalogRepository });
   if (checkout.status === "invalid-input") return NextResponse.redirect(new URL("/checkout?error=invalid", request.url), 303);
   if (checkout.status === "reconciliation-required") return NextResponse.redirect(new URL("/checkout?state=reconciled", request.url), 303);
 
@@ -34,6 +35,7 @@ export async function POST(request: Request) {
     timeline: [{ label: "Pesanan dibuat", state: "created", occurredAt: new Date().toISOString() }],
   };
   await developmentRetailOrders.save(order);
+  await developmentNotifications.saveIfMissing(`order:${id}:payment-pending`, { userId: session.userId, orderId: id, kind: "payment", title: "Bet lanjut pembayaran", body: `Pesanan ${id.slice(0, 8).toUpperCase()} menunggu pembayaran.`, createdAt: order.createdAt });
   const payment = await new DevelopmentPaymentProvider().createPaymentIntent({ orderReference: id, amount: checkout.subtotal, currency: "IDR", idempotencyKey: id });
   await developmentSessionCart.clear(sessionId);
   return NextResponse.redirect(new URL(payment.redirectUrl, request.url), 303);

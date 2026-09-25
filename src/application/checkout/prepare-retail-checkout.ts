@@ -1,5 +1,5 @@
 import type { CatalogRepository } from "@/infrastructure/catalog/catalog-repository";
-import { SeedCatalogRepository } from "@/infrastructure/catalog/catalog-repository";
+import { developmentCatalogRepository } from "@/infrastructure/catalog/catalog-repository";
 import type { RetailCartLine } from "@/domain/retail/types";
 
 export interface CheckoutLineInput {
@@ -20,7 +20,7 @@ export async function prepareRetailCheckout(input: {
   clientTotal: unknown;
   catalog?: CatalogRepository;
 }): Promise<RetailCheckoutResult> {
-  const catalog = input.catalog ?? new SeedCatalogRepository();
+  const catalog = input.catalog ?? developmentCatalogRepository;
   if (!Array.isArray(input.lines) || input.lines.length === 0 ||
     !Number.isSafeInteger(input.clientTotal) || Number(input.clientTotal) < 0 ||
     input.lines.some((line) => !line || typeof line !== "object" ||

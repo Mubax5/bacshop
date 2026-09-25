@@ -1,5 +1,5 @@
 import type { CatalogRepository } from "@/infrastructure/catalog/catalog-repository";
-import { SeedCatalogRepository } from "@/infrastructure/catalog/catalog-repository";
+import { developmentCatalogRepository } from "@/infrastructure/catalog/catalog-repository";
 import type { RetailCart, RetailCartLine } from "@/domain/retail/types";
 
 export interface SessionCartRepository {
@@ -43,7 +43,7 @@ export class SeedSessionCartRepository implements SessionCartRepository {
 export async function reconcileRetailCart(
   repository: SessionCartRepository,
   sessionId: string,
-  catalog: CatalogRepository = new SeedCatalogRepository(),
+  catalog: CatalogRepository = developmentCatalogRepository,
 ): Promise<RetailCart> {
   const storedLines = await repository.get(sessionId);
   const lines: RetailCartLine[] = [];

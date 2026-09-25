@@ -1,7 +1,7 @@
 import type { AccessContext } from "@/domain/access/types";
 import type { ResellerOrder } from "@/domain/reseller/types";
 import type { CatalogRepository } from "@/infrastructure/catalog/catalog-repository";
-import { SeedCatalogRepository } from "@/infrastructure/catalog/catalog-repository";
+import { developmentCatalogRepository } from "@/infrastructure/catalog/catalog-repository";
 import type { ResellerOrderRepository } from "@/infrastructure/reseller/reseller-order-repository";
 import { developmentResellerOrders } from "@/infrastructure/reseller/reseller-order-repository";
 import type { WalletLedgerRepository } from "@/infrastructure/reseller/wallet-ledger-repository";
@@ -37,7 +37,7 @@ export async function prepareResellerPurchase(input: {
     return { status: "ready", lines: duplicate.lines, subtotal: duplicate.total, order: duplicate, duplicate: true };
   }
 
-  const catalog = input.catalog ?? new SeedCatalogRepository();
+  const catalog = input.catalog ?? developmentCatalogRepository;
   const seen = new Set<string>();
   const lines: ResellerOrder["lines"] = [];
   for (const candidate of input.lines as ResellerPurchaseLineInput[]) {

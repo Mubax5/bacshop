@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import { requireAdminPermission } from "@/application/admin/require-admin";
 import type { AdminSession } from "@/domain/admin/types";
 import { AdminOperationsStore } from "@/infrastructure/admin/admin-operations-store";
+import { DevelopmentCatalogRepository } from "@/infrastructure/catalog/catalog-repository";
+import { getRetailCatalog } from "@/application/catalog/get-retail-catalog";
 import { AdminShell } from "@/ui/admin/admin-shell";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -27,7 +29,7 @@ describe("admin operations boundaries", () => {
   });
 
   it("requires a reason for sensitive catalog and balance changes and audits them", async () => {
-    const store = new AdminOperationsStore();
+    const store = new AdminOperationsStore(new DevelopmentCatalogRepository());
     await expect(store.updatePrice(finance, "STREAM-ULT-1M", 90000, "")).rejects.toThrow(/reason/i);
     await expect(store.adjustBalance(finance, "reseller-demo-1", 50000, "")).rejects.toThrow(/reason/i);
     await store.updatePrice(finance, "STREAM-ULT-1M", 90000, "Supplier cost update");
@@ -45,6 +47,15 @@ describe("admin operations boundaries", () => {
     const updated = (await store.listOrders(operations)).find((candidate) => candidate.id === order.id);
     expect(updated?.paymentStatus).toBe("paid");
     expect(updated?.fulfillmentStatus).toBe("fulfilled");
+  });
+
+  it("shares catalog mutations with storefront reads through the injected repository", async () => {
+    const catalog = new DevelopmentCatalogRepository();
+    const store = new AdminOperationsStore(catalog);
+    await store.updatePrice(finance, "STREAM-ULT-1M", 91000, "Supplier cost update");
+    await store.updateAvailability(content, "STREAM-ULT-1M", "coming-soon", "Catalog review");
+    const item = (await getRetailCatalog({ kind: "guest" }, catalog)).find((candidate) => candidate.sku === "STREAM-ULT-1M");
+    expect(item).toMatchObject({ retailPrice: 91000, availability: "coming-soon" });
   });
 
   it("rejects forged status values at the admin mutation boundary", async () => {

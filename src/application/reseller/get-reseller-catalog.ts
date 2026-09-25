@@ -1,11 +1,11 @@
 import { assertAccessContext, type AccessContext } from "@/domain/access/types";
 import type { ResellerCatalogItem } from "@/domain/catalog/types";
 import { resolvePrice } from "@/domain/pricing/price-resolver";
-import { SeedCatalogRepository } from "@/infrastructure/catalog/catalog-repository";
+import { developmentCatalogRepository, type CatalogRepository } from "@/infrastructure/catalog/catalog-repository";
 
 export async function getResellerCatalog(
   context: AccessContext | undefined,
-  repository = new SeedCatalogRepository(),
+  repository: CatalogRepository = developmentCatalogRepository,
 ): Promise<ResellerCatalogItem[]> {
   assertAccessContext(context);
   if (context.kind !== "reseller-approved" || context.surface !== "reseller-center") {

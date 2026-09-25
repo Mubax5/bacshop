@@ -5,6 +5,8 @@ import type { RetailCatalogItem } from "@/domain/catalog/types";
 import { formatRetailPrice } from "./public-content";
 import { ProductGrid } from "./commerce-ui";
 import { EmptyState } from "@/ui/states/commerce-states";
+import Link from "next/link";
+import { publicCategories, slugForProduct } from "./public-content";
 
 const durations = ["1 bulan", "3 bulan", "12 bulan", "Saldo Rp500.000"];
 const regions = ["Global", "Indonesia"];
@@ -70,6 +72,14 @@ export function CatalogExperience({ items, initialQuery = "", categoryName }: { 
   }, [duration, items, query, region, sort]);
 
   const activeFilterCount = Number(Boolean(duration)) + Number(Boolean(region));
+  const suggestions = useMemo(() => {
+    const needle = query.trim().toLocaleLowerCase("id-ID");
+    if (needle.length < 2) return { products: [], categories: [] };
+    return {
+      products: items.filter((item) => `${item.productName} ${item.sku} ${item.duration} ${item.region}`.toLocaleLowerCase("id-ID").includes(needle)).slice(0, 4),
+      categories: publicCategories.filter((category) => `${category.name} ${category.description}`.toLocaleLowerCase("id-ID").includes(needle)).slice(0, 3),
+    };
+  }, [items, query]);
   const clearFilters = () => { setDuration(""); setRegion(""); setQuery(""); setVisibleCount(4); };
 
   const filterControls = (
@@ -91,12 +101,13 @@ export function CatalogExperience({ items, initialQuery = "", categoryName }: { 
             <button className="catalog-toolbar__submit" type="submit" aria-label="Cari produk">↵</button>
             {query && <button type="button" aria-label="Hapus pencarian" onClick={() => setQuery("")}>×</button>}
           </form>
+          {query.trim().length >= 2 && (suggestions.products.length > 0 || suggestions.categories.length > 0) && <div className="search-suggestions" role="listbox" aria-label="Saran pencarian">{suggestions.products.map((item) => <Link href={`/products/${slugForProduct(item)}`} key={item.sku} role="option"><strong>{item.productName}</strong><span>{item.duration} · {item.region}</span></Link>)}{suggestions.categories.map((category) => <Link href={`/categories/${category.slug}`} key={category.slug} role="option"><strong>Kategori {category.name}</strong><span>{category.description}</span></Link>)}</div>}
           <button aria-controls="filter-sheet" aria-expanded={filtersOpen} aria-haspopup="dialog" className="mobile-filter-trigger" ref={filterTriggerRef} type="button" onClick={() => setFiltersOpen(true)}>Filter{activeFilterCount > 0 && <span>{activeFilterCount}</span>}</button>
           <label className="sort-control"><span>Urutkan</span><select value={sort} onChange={(event) => setSort(event.target.value)}><option value="popular">Pilihan Bacshop</option><option value="price-low">Harga terendah</option><option value="price-high">Harga tertinggi</option><option value="name">Nama A–Z</option></select></label>
         </div>
         <div className="catalog-quick-filters" aria-label="Filter cepat">{[...durations.slice(0, 3), ...regions].map((value) => <button aria-pressed={duration === value || region === value} className={duration === value || region === value ? "quick-filter is-selected" : "quick-filter"} key={value} onClick={() => durations.includes(value) ? setDuration(duration === value ? "" : value) : setRegion(region === value ? "" : value)} type="button">{value}</button>)}</div>
         <p className="results-count" aria-live="polite">{categoryName ? `${categoryName} · ` : ""}{filtered.length} produk</p>
-        {filtered.length === 0 ? <EmptyState title="Produk tidak ditemukan" description="Coba ubah kata pencarian atau hapus filter untuk melihat pilihan lainnya." onReset={clearFilters} /> : <>
+        {filtered.length === 0 ? <><EmptyState title="Produk tidak ditemukan" description="Coba istilah yang lebih umum, buka kategori terdekat, atau hapus filter untuk melihat pilihan lainnya." onReset={clearFilters} /><div className="empty-category-links"><strong>Coba kategori lain</strong><div>{publicCategories.slice(0, 4).map((category) => <Link href={`/categories/${category.slug}`} key={category.slug}>{category.name}</Link>)}</div></div></> : <>
           <ProductGrid items={filtered.slice(0, visibleCount)} />
           {visibleCount < filtered.length && <div className="load-more"><button className="button button--secondary" onClick={() => setVisibleCount((count) => count + 4)} type="button">Muat lainnya <span aria-hidden="true">↓</span></button><small>Menampilkan {Math.min(visibleCount, filtered.length)} dari {filtered.length} produk</small></div>}
         </>}

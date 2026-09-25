@@ -1,5 +1,5 @@
-import { seededCatalog } from "@/infrastructure/catalog/seed-catalog";
 import type { CatalogSku } from "@/domain/catalog/types";
+import { developmentCatalogRepository, type MutableCatalogRepository } from "@/infrastructure/catalog/catalog-repository";
 import type { AdminOrderRecord, AdminPermission, AdminPromotionRecord, AdminResellerRecord, AdminSupportRecord, AdminSession } from "@/domain/admin/types";
 import { ADMIN_ROLE_PERMISSIONS } from "@/domain/admin/types";
 import type { AuditEvent } from "@/domain/reseller/types";
@@ -9,7 +9,7 @@ function permission(session: AdminSession, requested: AdminPermission) {
 }
 
 export class AdminOperationsStore {
-  private catalog: CatalogSku[] = seededCatalog.map((item) => ({ ...item, resellerPrices: { ...item.resellerPrices }, requirements: [...item.requirements] }));
+  constructor(private readonly catalog: MutableCatalogRepository = developmentCatalogRepository) {}
   private readonly orders: AdminOrderRecord[] = [
     { id: "order-demo-001", customerId: "customer-demo-1", productName: "StreamPlus Ultra", total: 89000, paymentStatus: "paid", orderStatus: "processing", fulfillmentStatus: "processing", createdAt: "2026-09-25T08:00:00.000Z" },
     { id: "order-demo-002", customerId: "customer-demo-2", productName: "GameStore Gift Card 500K", total: 515000, paymentStatus: "pending", orderStatus: "created", fulfillmentStatus: "queued", createdAt: "2026-09-25T09:00:00.000Z" },
@@ -23,19 +23,17 @@ export class AdminOperationsStore {
   private readonly support: AdminSupportRecord[] = [{ id: "ticket-1001", customerId: "customer-demo-1", subject: "Aktivasi StreamPlus belum masuk", status: "open", priority: "high" }];
   private readonly audits: AuditEvent[] = [];
 
-  async listProducts(session: AdminSession) { permission(session, "catalog:read"); return this.catalog.map((item) => ({ ...item, resellerPrices: { ...item.resellerPrices }, requirements: [...item.requirements] })); }
+  async listProducts(session: AdminSession) { permission(session, "catalog:read"); return (await this.catalog.listSkus()).map((item) => ({ ...item, resellerPrices: { ...item.resellerPrices }, requirements: [...item.requirements] })); }
   async updatePrice(session: AdminSession, sku: string, retailPrice: number, reason: string) {
     permission(session, "pricing:write");
     if (!reason.trim()) throw new Error("A reason is required");
     if (!Number.isSafeInteger(retailPrice) || retailPrice <= 0) throw new Error("Invalid price");
-    const product = this.catalog.find((item) => item.sku === sku); if (!product) throw new Error("SKU not found");
-    product.retailPrice = retailPrice; await this.audit(session, "admin.price-update", sku, { retailPrice, reason });
+    await this.catalog.updateSku(sku, { retailPrice }); await this.audit(session, "admin.price-update", sku, { retailPrice, reason });
   }
   async updateAvailability(session: AdminSession, sku: string, availability: CatalogSku["availability"], reason: string) {
     permission(session, "catalog:write"); if (!reason.trim()) throw new Error("A reason is required");
     if (!["available", "out-of-stock", "coming-soon"].includes(availability)) throw new Error("Invalid availability");
-    const product = this.catalog.find((item) => item.sku === sku); if (!product) throw new Error("SKU not found");
-    product.availability = availability; await this.audit(session, "admin.catalog-availability-update", sku, { availability, reason });
+    await this.catalog.updateSku(sku, { availability }); await this.audit(session, "admin.catalog-availability-update", sku, { availability, reason });
   }
   async listOrders(session: AdminSession) { permission(session, "orders:read"); return this.orders.map((order) => ({ ...order })); }
   async updateFulfillment(session: AdminSession, id: string, fulfillmentStatus: AdminOrderRecord["fulfillmentStatus"], reason: string) {
