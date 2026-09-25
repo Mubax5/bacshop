@@ -32,7 +32,10 @@ export async function prepareResellerPurchase(input: {
       typeof (line as Record<string, unknown>).sku !== "string" || !Number.isSafeInteger((line as Record<string, unknown>).quantity) || Number((line as Record<string, unknown>).quantity) < 1)) return invalid();
   const orders = input.orderRepository ?? developmentResellerOrders;
   const duplicate = await orders.findByIdempotencyKey(input.idempotencyKey);
-  if (duplicate) return { status: "ready", lines: duplicate.lines, subtotal: duplicate.total, order: duplicate, duplicate: true };
+  if (duplicate) {
+    if (duplicate.resellerId !== input.context.userId) return invalid();
+    return { status: "ready", lines: duplicate.lines, subtotal: duplicate.total, order: duplicate, duplicate: true };
+  }
 
   const catalog = input.catalog ?? new SeedCatalogRepository();
   const seen = new Set<string>();

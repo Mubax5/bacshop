@@ -67,6 +67,25 @@ describe("reseller center boundaries", () => {
     expect(result.order.targetCustomerId).toBe("reseller-customer-17");
   });
 
+  it("does not replay another reseller's idempotency key or order", async () => {
+    const orders = new SeedResellerOrderRepository();
+    const wallet = new SeedWalletLedgerRepository({ seedDemoBalance: false });
+    await wallet.credit({ resellerId: approved.userId, amount: 100000, reference: "collision-credit-a", kind: "credit" });
+    await wallet.credit({ resellerId: "reseller-demo-2", amount: 100000, reference: "collision-credit-b", kind: "credit" });
+    const first = await prepareResellerPurchase({
+      context: resolveResellerAccessContext(approved, "reseller-center"),
+      lines: [{ sku: "STREAM-ULT-1M", quantity: 1 }], clientTotal: 72000,
+      targetCustomerId: "reseller-customer-17", idempotencyKey: "shared-key", orderRepository: orders, wallet,
+    });
+    expect(first.status).toBe("ready");
+    const second = await prepareResellerPurchase({
+      context: resolveResellerAccessContext({ userId: "reseller-demo-2", status: "approved", tier: "silver" }, "reseller-center"),
+      lines: [{ sku: "STREAM-ULT-1M", quantity: 1 }], clientTotal: 76000,
+      targetCustomerId: "reseller-customer-21", idempotencyKey: "shared-key", orderRepository: orders, wallet,
+    });
+    expect(second.status).toBe("invalid-input");
+  });
+
   it("derives wallet balance from append-only entries and idempotently accepts duplicate top-ups", async () => {
     const ledger = new SeedWalletLedgerRepository({ seedDemoBalance: false });
     const first = await ledger.credit({ resellerId: approved.userId, amount: 100000, reference: "topup-event-1", kind: "top-up" });
