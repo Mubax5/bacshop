@@ -1,6 +1,6 @@
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
-import { DevelopmentAuthAdapter, type CustomerSession } from "@/infrastructure/auth/auth-provider";
+import { DevelopmentAuthAdapter, type CustomerSession, type PlatformSession } from "@/infrastructure/auth/auth-provider";
 import { validateReturnPath } from "./return-path";
 
 const SESSION_COOKIE = "bacshop-dev-session";
@@ -10,6 +10,12 @@ export async function getCustomerSession(): Promise<CustomerSession | null> {
   if (process.env.NODE_ENV === "production") return null;
   const cookieStore = await cookies();
   return authAdapter.readSession(cookieStore.get(SESSION_COOKIE)?.value);
+}
+
+export async function getPlatformSession(): Promise<PlatformSession | null> {
+  if (process.env.NODE_ENV === "production") return null;
+  const cookieStore = await cookies();
+  return authAdapter.readPlatformSession(cookieStore.get(SESSION_COOKIE)?.value);
 }
 
 export const developmentAuthAdapter = authAdapter;

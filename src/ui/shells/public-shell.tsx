@@ -74,6 +74,7 @@ export function PublicFooter() {
   );
 }
 
-export function PublicShell({ children, state = "guest", resellerApproved = false }: { children: React.ReactNode; state?: "guest" | "customer"; resellerApproved?: boolean }) {
+export function PublicShell({ children, state = "guest", resellerApproved = false }: { children: React.ReactNode; state?: "guest" | "customer" | "admin"; resellerApproved?: boolean }) {
+  if (state === "admin") return <>{children}</>;
   return <><DesktopHeader state={state} resellerApproved={resellerApproved} /><MobileTopBar /><div className="public-content">{children}</div><PublicFooter /><BottomNavigation state={state} /></>;
 }

@@ -1,4 +1,5 @@
 import type { AuthenticatedIdentity } from "@/application/access/resolve-access-context";
+import type { AdminRole, AdminSession } from "@/domain/admin/types";
 
 /** Production identity providers implement this server-only adapter contract. */
 export interface AuthProvider {
@@ -12,6 +13,9 @@ export interface CustomerSession {
   displayName: string;
   resellerTier?: "bronze" | "silver" | "gold";
 }
+
+export type { AdminRole, AdminSession };
+export type PlatformSession = CustomerSession | AdminSession;
 
 export interface CustomerAuthAdapter {
   authenticate(email: string, password: string): Promise<CustomerSession | null>;
@@ -35,6 +39,12 @@ export class DevelopmentAuthAdapter implements CustomerAuthAdapter {
     displayName: "Demo Reseller",
     resellerTier: "gold",
   };
+  private readonly adminSessions: Readonly<Record<string, AdminSession>> = {
+    "dev-admin-super": { userId: "admin-super-demo", role: "admin", adminRole: "super-admin", email: "admin@bacshop.test", displayName: "Super Admin Demo", mfaVerified: true },
+    "dev-admin-operations": { userId: "admin-operations-demo", role: "admin", adminRole: "operations", email: "operations@bacshop.test", displayName: "Operations Demo", mfaVerified: true },
+    "dev-admin-finance": { userId: "admin-finance-demo", role: "admin", adminRole: "finance", email: "finance@bacshop.test", displayName: "Finance Demo", mfaVerified: true },
+    "dev-admin-content": { userId: "admin-content-demo", role: "admin", adminRole: "content", email: "content@bacshop.test", displayName: "Content Demo", mfaVerified: true },
+  };
 
   async authenticate(email: string, password: string): Promise<CustomerSession | null> {
     const normalized = email.trim().toLowerCase();
@@ -56,5 +66,10 @@ export class DevelopmentAuthAdapter implements CustomerAuthAdapter {
     if (token === "dev-customer-session") return this.session;
     if (token === "dev-reseller-approved") return this.resellerSession;
     return [...this.registrations.values()].map(({ session }) => session).find((session) => token === `dev-session:${session.userId}`) ?? null;
+  }
+
+  async readPlatformSession(token: string | undefined): Promise<PlatformSession | null> {
+    if (token && this.adminSessions[token]) return { ...this.adminSessions[token] };
+    return this.readSession(token);
   }
 }
