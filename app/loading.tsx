@@ -1,0 +1,3 @@
+export default function Loading() {
+  return <main className="async-state"><div className="async-state__bar" /><div className="async-state__block" /><div className="async-state__block async-state__block--short" /></main>;
+}

@@ -593,6 +593,21 @@ h1, h2, h3, p { margin-top: 0; }
 .admin-status--suspended, .admin-status--rejected, .admin-status--issue, .admin-status--high { color: var(--bac-danger); background: #fff0f0; }
 .admin-empty { display: grid; justify-items: center; gap: 8px; padding: 32px 18px; border: 1px dashed var(--bac-line); border-radius: 15px; background: #fff; text-align: center; }
 .admin-empty h2, .admin-empty p { margin: 0; }
+.async-state { display: grid; min-height: 60vh; align-content: center; gap: 14px; max-width: 760px; margin: 0 auto; padding: 30px 18px; }
+.async-state__bar, .async-state__block, .admin-loading-banner, .admin-loading-nav, .admin-loading-content > div { border: 1px solid var(--bac-line); border-radius: 15px; background: linear-gradient(100deg, #f1efec 25%, #faf9f8 42%, #f1efec 62%); background-size: 300% 100%; animation: admin-shimmer 1.4s ease infinite; }
+.async-state__bar { width: 42%; height: 18px; }
+.async-state__block { min-height: 170px; }
+.async-state__block--short { width: 70%; min-height: 110px; }
+.async-state--error { justify-items: start; }
+.async-state--error h1, .async-state--error p { margin: 0; }
+.async-state--error p { color: var(--bac-text-muted); }
+.async-state--error > div { display: flex; gap: 8px; flex-wrap: wrap; }
+.admin-loading-banner { height: 80px; margin-bottom: 20px; }
+.admin-loading-layout { display: grid; grid-template-columns: 220px 1fr; gap: 24px; }
+.admin-loading-nav { min-height: 340px; }
+.admin-loading-content { display: grid; gap: 12px; }
+.admin-loading-content > div { min-height: 150px; }
+@keyframes admin-shimmer { to { background-position: -150% 0; } }
 
 @media (max-width: 760px) {
   .admin-page { padding: 10px 0 calc(50px + env(safe-area-inset-bottom)); }
@@ -614,7 +629,11 @@ h1, h2, h3, p { margin-top: 0; }
   .admin-record-list > article > :last-child { grid-column: 1 / -1; }
   .admin-record-list form { grid-column: 1 / -1; }
   .admin-record-list form input, .admin-record-list form select { flex: 1 1 140px; min-height: 44px; }
+  .admin-loading-layout { grid-template-columns: 1fr; gap: 12px; }
+  .admin-loading-nav { min-height: 50px; }
 }
+
+@media (prefers-reduced-motion: reduce) { .async-state__bar, .async-state__block, .admin-loading-banner, .admin-loading-nav, .admin-loading-content > div { animation: none; } }
 
 @media (max-width: 360px) {
   .page-width { width: calc(100% - 26px); }
