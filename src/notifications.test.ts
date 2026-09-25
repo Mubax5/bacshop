@@ -8,7 +8,7 @@ describe("transactional notifications", () => {
   it("emits payment and processing notifications once for a paid callback", async () => {
     const orders = new SeedRetailOrderRepository();
     const notifications = new DevelopmentNotificationRepository();
-    await orders.save({ id: "order-1", userId: "customer-1", items: [], total: 89000, paymentStatus: "pending", orderStatus: "created", fulfillmentStatus: "queued", entitlementStatus: "pending_activation", createdAt: new Date(0).toISOString(), timeline: [] });
+    await orders.save({ id: "order-1", userId: "customer-1", items: [], total: 89000, recipientEmail: "buyer@example.com", paymentMethod: "qris", paymentStatus: "pending", orderStatus: "created", fulfillmentStatus: "queued", entitlementStatus: "pending_activation", createdAt: new Date(0).toISOString(), timeline: [] });
     const verifier: PaymentCallbackVerifier = { verifyCallback: async () => ({ eventId: "event-1", orderReference: "order-1", status: "paid" }) };
     await handlePaymentCallback(new Request("http://localhost"), verifier, orders, notifications);
     await handlePaymentCallback(new Request("http://localhost"), verifier, orders, notifications);

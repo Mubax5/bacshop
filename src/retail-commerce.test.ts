@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import { validateReturnPath } from "@/application/auth/return-path";
 import { customerRouteRedirect } from "@/application/auth/require-customer";
 import { prepareRetailCheckout } from "@/application/checkout/prepare-retail-checkout";
+import { validateCheckoutDetails } from "@/application/checkout/validate-checkout-details";
 import { handlePaymentCallback } from "@/application/payments/handle-payment-callback";
 import type { RetailOrder } from "@/domain/retail/types";
 import { SeedSessionCartRepository, reconcileRetailCart } from "@/infrastructure/cart/session-cart-repository";
@@ -13,6 +14,11 @@ import type { PaymentCallbackVerifier } from "@/infrastructure/payments/payment-
 import { OrderTimeline } from "@/ui/retail/retail-surfaces";
 
 describe("authenticated retail commerce boundaries", () => {
+  it("validates recipient, payment method, and terms before creating payment intent", () => {
+    expect(validateCheckoutDetails({ recipientEmail: "buyer@example.com", paymentMethod: "qris", termsAccepted: true })).toMatchObject({ recipientEmail: "buyer@example.com", paymentMethod: "qris" });
+    expect(() => validateCheckoutDetails({ recipientEmail: "buyer@example.com", paymentMethod: "qris", termsAccepted: false })).toThrow(/syarat/i);
+    expect(() => validateCheckoutDetails({ recipientEmail: "not-an-email", paymentMethod: "qris", termsAccepted: true })).toThrow(/email/i);
+  });
   it("removes unavailable SKUs and calculates the session cart with current retail prices", async () => {
     const cartStore = new SeedSessionCartRepository();
     await cartStore.add("cart-unavailable-1", "STREAM-ULT-1M", 2);
@@ -61,7 +67,7 @@ describe("authenticated retail commerce boundaries", () => {
     const order: RetailOrder = {
       id: "order-callback-1", userId: "customer-demo-1",
       items: [{ sku: "STREAM-ULT-1M", productName: "StreamPlus Ultra", quantity: 1, retailPrice: 89000, availability: "available" }],
-      total: 89000, paymentStatus: "pending", orderStatus: "created", fulfillmentStatus: "queued", entitlementStatus: "pending_activation",
+      total: 89000, recipientEmail: "buyer@example.com", paymentMethod: "qris", paymentStatus: "pending", orderStatus: "created", fulfillmentStatus: "queued", entitlementStatus: "pending_activation",
       createdAt: new Date(0).toISOString(), timeline: [{ label: "Pesanan dibuat", state: "created", occurredAt: new Date(0).toISOString() }],
     };
     await repository.save(order);
@@ -83,7 +89,7 @@ describe("authenticated retail commerce boundaries", () => {
 
   it("renders payment received separately from unfinished activation", () => {
     const order: RetailOrder = {
-      id: "order-timeline-1", userId: "customer-demo-1", items: [], total: 0,
+      id: "order-timeline-1", userId: "customer-demo-1", items: [], total: 0, recipientEmail: "buyer@example.com", paymentMethod: "qris",
       paymentStatus: "paid", orderStatus: "processing", fulfillmentStatus: "processing", entitlementStatus: "pending_activation",
       createdAt: new Date(0).toISOString(), timeline: [{ label: "Pembayaran diterima", state: "paid", occurredAt: new Date(0).toISOString() }],
     };

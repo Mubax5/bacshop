@@ -2,6 +2,7 @@ export type PaymentStatus = "pending" | "paid" | "failed" | "expired" | "refunde
 export type OrderStatus = "created" | "processing" | "needs_customer_input" | "fulfilled" | "issue" | "cancelled";
 export type FulfillmentStatus = "queued" | "processing" | "needs_customer_input" | "fulfilled" | "issue";
 export type EntitlementStatus = "pending_activation" | "active" | "expiring_soon" | "expired" | "revoked" | "not_applicable";
+export type RetailPaymentMethod = "bank_transfer" | "qris";
 
 export interface RetailCartLine {
   sku: string;
@@ -22,6 +23,8 @@ export interface RetailOrder {
   userId: string;
   items: RetailCartLine[];
   total: number;
+  recipientEmail: string;
+  paymentMethod: RetailPaymentMethod;
   paymentStatus: PaymentStatus;
   orderStatus: OrderStatus;
   fulfillmentStatus: FulfillmentStatus;
