@@ -33,12 +33,14 @@ export class AdminOperationsStore {
   }
   async updateAvailability(session: AdminSession, sku: string, availability: CatalogSku["availability"], reason: string) {
     permission(session, "catalog:write"); if (!reason.trim()) throw new Error("A reason is required");
+    if (!["available", "out-of-stock", "coming-soon"].includes(availability)) throw new Error("Invalid availability");
     const product = this.catalog.find((item) => item.sku === sku); if (!product) throw new Error("SKU not found");
     product.availability = availability; await this.audit(session, "admin.catalog-availability-update", sku, { availability, reason });
   }
   async listOrders(session: AdminSession) { permission(session, "orders:read"); return this.orders.map((order) => ({ ...order })); }
   async updateFulfillment(session: AdminSession, id: string, fulfillmentStatus: AdminOrderRecord["fulfillmentStatus"], reason: string) {
     permission(session, "orders:write"); if (!reason.trim()) throw new Error("A reason is required");
+    if (!["queued", "processing", "needs_customer_input", "fulfilled", "issue"].includes(fulfillmentStatus)) throw new Error("Invalid fulfillment status");
     const order = this.orders.find((candidate) => candidate.id === id); if (!order) throw new Error("Order not found");
     order.fulfillmentStatus = fulfillmentStatus; order.orderStatus = fulfillmentStatus === "fulfilled" ? "fulfilled" : fulfillmentStatus === "issue" ? "issue" : "processing";
     await this.audit(session, "admin.fulfillment-update", id, { fulfillmentStatus, reason });

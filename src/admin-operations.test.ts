@@ -16,6 +16,7 @@ const operations: AdminSession = {
 };
 
 const finance: AdminSession = { ...operations, userId: "admin-finance-demo", adminRole: "finance" };
+const content: AdminSession = { ...operations, userId: "admin-content-demo", adminRole: "content" };
 
 describe("admin operations boundaries", () => {
   it("enforces least-privilege permissions server-side", () => {
@@ -44,6 +45,12 @@ describe("admin operations boundaries", () => {
     const updated = (await store.listOrders(operations)).find((candidate) => candidate.id === order.id);
     expect(updated?.paymentStatus).toBe("paid");
     expect(updated?.fulfillmentStatus).toBe("fulfilled");
+  });
+
+  it("rejects forged status values at the admin mutation boundary", async () => {
+    const store = new AdminOperationsStore();
+    await expect(store.updateAvailability(content, "STREAM-ULT-1M", "hidden" as never, "Catalog review")).rejects.toThrow(/invalid/i);
+    await expect(store.updateFulfillment(operations, "order-demo-001", "paid" as never, "Fulfillment review")).rejects.toThrow(/invalid/i);
   });
 
   it("renders an admin shell without retail navigation", () => {
