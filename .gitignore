@@ -10,3 +10,6 @@ playwright-report/
 test-results/
 *.tsbuildinfo
 .bacshop-private/
+assets/uploads/
+*.tmp
+

@@ -4,6 +4,7 @@ const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
+const QRCode = require('qrcode');
 
 const ROOT = __dirname;
 const PORT = Number(process.env.PORT || 4173);
@@ -20,6 +21,9 @@ const SESSION_MS = 8 * 60 * 60 * 1000;
 const COOKIE = 'BacshopAdmin';
 const USER_COOKIE = 'BacshopUser';
 const CATEGORIES = new Set(['ai', 'streaming', 'desain', 'musik', 'office', 'editing', 'voucher']);
+const DANA_QRIS_GENERATE_PATH = '/v1.0/qr/qr-mpm-generate.htm';
+const DANA_QRIS_STATUS_PATH = '/rest/v1.1/debit/status';
+const DANA_QRIS_NOTIFY_PATH = '/api/payments/dana/notify';
 const MIME = {
   '.css': 'text/css; charset=utf-8', '.html': 'text/html; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8', '.json': 'application/json; charset=utf-8',
@@ -77,19 +81,22 @@ function defaultStorefront() {
   return {
     categories: [...CATEGORIES].map((slug) => ({ slug, name: slug === 'ai' ? 'AI & Produktivitas' : slug.charAt(0).toUpperCase() + slug.slice(1), image: '' })),
     banners: [
-      { id: 'main', title: 'Produk digital, tanpa bingung.', description: 'Bandingkan durasi, cara aktivasi, dan ketentuan sebelum memilih.', image: '', href: '#/kategori/semua', active: true },
-      { id: 'campaign-2', title: 'Pilih produk yang sesuai.', description: 'Lihat durasi, cara aktivasi, dan ketentuan sebelum pesan.', image: '', href: '#/kategori/semua', active: true },
-      { id: 'campaign-3', title: 'Harga khusus reseller.', description: 'Mulai dari pembelian bulk atau paket reseller satu kali.', image: '', href: '#/program-reseller', active: true },
+      { id: 'main', title: '', description: '', image: '', href: '#/', active: true },
+      { id: 'campaign-2', title: '', description: '', image: '', href: '#/', active: true },
+      { id: 'campaign-3', title: '', description: '', image: '', href: '#/', active: true },
     ],
     promotions: [],
     resellerPlan: { price: 149000, terms: 'Akses harga reseller berlaku permanen untuk seluruh produk setelah pembayaran diverifikasi.' },
-    payment: { qrisImage: '', instructions: 'Pindai QRIS lalu masukkan nominal pesanan yang tertera.' },
+    payment: { provider: 'DANA QRIS dinamis' },
   };
 }
 
 function readStorefront() {
   const stored = readJson(CMS_FILE, null);
-  return stored && typeof stored === 'object' ? { ...defaultStorefront(), ...stored } : defaultStorefront();
+  const defaults = defaultStorefront();
+  return stored && typeof stored === 'object'
+    ? { ...defaults, ...stored, payment: { ...defaults.payment, available: Boolean(danaConfig()) } }
+    : { ...defaults, payment: { ...defaults.payment, available: Boolean(danaConfig()) } };
 }
 
 function saveAudit(entry) {
@@ -106,6 +113,134 @@ function json(res, status, body, extraHeaders = {}) {
     ...extraHeaders,
   });
   res.end(JSON.stringify(body));
+}
+
+function danaConfig() {
+  const inlineKey = process.env.DANA_PRIVATE_KEY || '';
+  let privateKey = inlineKey.replace(/\\n/g, '\n');
+  if (!privateKey && process.env.DANA_PRIVATE_KEY_FILE) {
+    try { privateKey = fs.readFileSync(process.env.DANA_PRIVATE_KEY_FILE, 'utf8'); } catch { return null; }
+  }
+  const config = {
+    baseUrl: (process.env.DANA_API_BASE_URL || '').replace(/\/$/, ''),
+    merchantId: process.env.DANA_MERCHANT_ID || '',
+    clientId: process.env.DANA_CLIENT_ID || '',
+    channelId: process.env.DANA_CHANNEL_ID || '',
+    origin: process.env.DANA_ORIGIN || '',
+    storeId: process.env.DANA_STORE_ID || '',
+    privateKey,
+    publicKey: (process.env.DANA_PUBLIC_KEY || '').replace(/\\n/g, '\n'),
+  };
+  if (!config.baseUrl || !config.merchantId || !config.clientId || !config.channelId || !config.origin || !config.storeId || !config.privateKey) return null;
+  try {
+    const endpoint = new URL(config.baseUrl);
+    if (endpoint.protocol !== 'https:' && process.env.NODE_ENV !== 'test' && !['localhost', '127.0.0.1'].includes(endpoint.hostname)) return null;
+    crypto.createPrivateKey(config.privateKey);
+  } catch { return null; }
+  return config;
+}
+
+function danaTimestamp(date = new Date()) {
+  const jakarta = new Date(date.getTime() + 7 * 60 * 60 * 1000).toISOString().slice(0, 19);
+  return `${jakarta}+07:00`;
+}
+
+function danaSignature(method, pathname, rawBody, timestamp, privateKey) {
+  const digest = crypto.createHash('sha256').update(rawBody).digest('hex');
+  const stringToSign = `${method.toUpperCase()}:${pathname}:${digest}:${timestamp}`;
+  return crypto.sign('RSA-SHA256', Buffer.from(stringToSign), privateKey).toString('base64');
+}
+
+function verifyDanaSignature(req, body, publicKey) {
+  const timestamp = req.headers['x-timestamp'];
+  const signature = req.headers['x-signature'];
+  const parsedTimestamp = Date.parse(timestamp || '');
+  if (!timestamp || !signature || !Number.isFinite(parsedTimestamp) || Math.abs(Date.now() - parsedTimestamp) > 5 * 60 * 1000) return false;
+  try {
+    const rawBody = JSON.stringify(body);
+    const digest = crypto.createHash('sha256').update(rawBody).digest('hex');
+    const stringToVerify = `${req.method.toUpperCase()}:${new URL(req.url, `http://${HOST}:${PORT}`).pathname}:${digest}:${timestamp}`;
+    return crypto.verify('RSA-SHA256', Buffer.from(stringToVerify), publicKey, Buffer.from(signature, 'base64'));
+  } catch { return false; }
+}
+
+async function danaRequest(pathname, body, config = danaConfig()) {
+  if (!config) throw Object.assign(new Error('Pembayaran QRIS dinamis belum dikonfigurasi. Admin perlu menyiapkan kredensial API DANA di server.'), { status: 503 });
+  const timestamp = danaTimestamp();
+  const rawBody = JSON.stringify(body);
+  const externalId = `${Date.now()}${crypto.randomInt(100000, 999999)}`.slice(0, 36);
+  const response = await fetch(`${config.baseUrl}${pathname}`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json', Accept: 'application/json',
+      'X-TIMESTAMP': timestamp,
+      'X-SIGNATURE': danaSignature('POST', pathname, rawBody, timestamp, config.privateKey),
+      'ORIGIN': config.origin,
+      'X-PARTNER-ID': config.clientId,
+      'X-EXTERNAL-ID': externalId,
+      'CHANNEL-ID': config.channelId,
+    },
+    body: rawBody,
+    signal: AbortSignal.timeout(8000),
+  });
+  let result;
+  try { result = await response.json(); } catch { throw Object.assign(new Error('DANA mengirim respons yang tidak dapat dibaca.'), { status: 502 }); }
+  if (!response.ok || !String(result.responseCode || '').startsWith('200')) {
+    console.error('DANA API rejected request:', response.status, result.responseCode || 'unknown');
+    throw Object.assign(new Error('DANA belum dapat memproses QRIS. Coba lagi beberapa saat.'), { status: 502 });
+  }
+  return result;
+}
+
+async function dynamicQrImage(result, config) {
+  if (typeof result.qrImage === 'string' && result.qrImage.length > 0) {
+    const dataUrl = result.qrImage.match(/^data:image\/(png|jpeg|webp);base64,([A-Za-z0-9+/]+={0,2})$/i);
+    if (dataUrl) return `data:image/${dataUrl[1].toLowerCase()};base64,${dataUrl[2]}`;
+    if (/^[A-Za-z0-9+/]+={0,2}$/.test(result.qrImage)) {
+      const bytes = Buffer.from(result.qrImage, 'base64');
+      const mime = uploadedImage(bytes, 'image/png') ? 'png' : uploadedImage(bytes, 'image/jpeg') ? 'jpeg' : uploadedImage(bytes, 'image/webp') ? 'webp' : '';
+      if (mime) return `data:image/${mime};base64,${result.qrImage}`;
+    }
+  }
+  if (typeof result.qrUrl === 'string') {
+    try {
+      const qrUrl = new URL(result.qrUrl);
+      const apiHost = new URL(config.baseUrl).hostname;
+      if (qrUrl.protocol === 'https:' && (qrUrl.hostname === apiHost || qrUrl.hostname === 'dana.id' || qrUrl.hostname.endsWith('.dana.id'))) return qrUrl.href;
+    } catch { /* invalid DANA QR URL */ }
+  }
+  if (typeof result.qrContent === 'string' && result.qrContent.length > 0 && result.qrContent.length <= 512) {
+    return QRCode.toDataURL(result.qrContent, { errorCorrectionLevel: 'M', margin: 2, width: 440 });
+  }
+  throw Object.assign(new Error('DANA tidak mengembalikan isi QRIS yang bisa ditampilkan. Pesanan belum dibuat.'), { status: 502 });
+}
+
+async function readRawBody(req, limit = 65536) {
+  let raw = '';
+  for await (const chunk of req) {
+    raw += chunk.toString('utf8');
+    if (raw.length > limit) throw Object.assign(new Error('Request terlalu besar.'), { status: 413 });
+  }
+  try { return { raw, body: JSON.parse(raw || '{}') }; } catch { throw Object.assign(new Error('Isi permintaan tidak valid.'), { status: 400 }); }
+}
+
+async function handleDanaNotify(req, res) {
+  const config = danaConfig();
+  if (!config?.publicKey) return json(res, 503, { responseCode: '5005601', responseMessage: 'Payment notification is not configured.' });
+  const { body } = await readRawBody(req, 65536);
+  if (!verifyDanaSignature(req, body, config.publicKey)) return json(res, 401, { responseCode: '4015600', responseMessage: 'Invalid signature.' });
+  const order = readOrders().find((entry) => entry.id === body.originalPartnerReferenceNo);
+  if (!order || !matchingDanaPayment(order, body)) return json(res, 404, { responseCode: '4045600', responseMessage: 'Order not found.' });
+  if (body.latestTransactionStatus === '00') {
+    const result = savePaidOrder(order, 'DANA QRIS webhook', body.originalReferenceNo || body.originalPartnerReferenceNo);
+    if (result.error) return json(res, 409, { responseCode: '4095600', responseMessage: 'Order status cannot be updated.' });
+  } else if (body.latestTransactionStatus === '05' && order.paymentStatus === 'pending') {
+    const orders = readOrders();
+    const index = orders.findIndex((entry) => entry.id === order.id);
+    orders[index] = { ...orders[index], paymentStatus: 'cancelled', status: 'cancelled', cancelledAt: new Date().toISOString() };
+    saveOrders(orders);
+  }
+  return json(res, 200, { responseCode: '2005600', responseMessage: 'Successful' });
 }
 
 function cookieValue(req) {
@@ -379,10 +514,6 @@ function validateStorefrontUpdate(input) {
     const plan = input.resellerPlan;
     if (!Number.isSafeInteger(Number(plan.price)) || Number(plan.price) < 149000 || typeof plan.terms !== 'string' || !plan.terms.trim() || plan.terms.length > 5000) return 'Harga paket reseller minimal Rp149.000 dan syaratnya wajib diisi.';
   }
-  if (input.payment) {
-    if (input.payment.qrisImage && !safeAssetPath(input.payment.qrisImage)) return 'QRIS harus berasal dari unggahan toko.';
-    if (typeof input.payment.instructions !== 'string' || !input.payment.instructions.trim() || input.payment.instructions.length > 1000) return 'Periksa instruksi pembayaran.';
-  }
   return null;
 }
 
@@ -406,17 +537,49 @@ function resellerEntitlementsFor(user, orders, products) {
   return [...entitled];
 }
 
-function verifyOrderPayment(order, body, adminEmail) {
+function markOrderPaid(order, provider, reference) {
   if (order.paymentStatus === 'paid') return { order, changed: false };
   if (order.paymentStatus !== 'pending') return { error: 'Status pembayaran pesanan ini tidak dapat diubah.' };
-  const reference = typeof body?.transactionReference === 'string' ? body.transactionReference.trim() : '';
-  if (reference.length < 3 || reference.length > 120) return { error: 'Masukkan nomor referensi transaksi yang sudah dicocokkan di DANA Bisnis.' };
   const now = new Date().toISOString();
-  const updated = { ...order, paymentStatus: 'paid', paidAt: now, paymentVerification: { provider: 'DANA QRIS manual', transactionReference: reference, verifiedBy: adminEmail, verifiedAt: now } };
+  const updated = { ...order, paymentStatus: 'paid', paidAt: now, status: 'paid', paymentVerification: { provider, transactionReference: reference, verifiedAt: now } };
   return { order: updated, changed: true };
 }
 
+function syncResellerAccess(order, orders) {
+  const users = readUsers();
+  const userIndex = users.findIndex((entry) => entry.id === order.userId);
+  if (userIndex < 0) return;
+  const user = users[userIndex];
+  if (order.kind === 'reseller-plan') users[userIndex] = { ...user, resellerPlan: { active: true, orderId: order.id, purchasedAt: order.paidAt } };
+  else users[userIndex] = { ...user, productEntitlements: resellerEntitlementsFor(user, orders, readProducts()) };
+  saveUsers(users);
+}
+
+function matchingDanaPayment(order, payment) {
+  const amount = Number(payment?.amount?.value);
+  return payment?.originalPartnerReferenceNo === order.id
+    && payment?.merchantId === danaConfig()?.merchantId
+    && (!payment.amount?.currency || payment.amount.currency === 'IDR')
+    && Number.isFinite(amount) && amount === Number(order.total);
+}
+
+function savePaidOrder(order, provider, reference) {
+  const orders = readOrders();
+  const index = orders.findIndex((entry) => entry.id === order.id);
+  if (index < 0) return { error: 'Pesanan tidak ditemukan.' };
+  const result = markOrderPaid(orders[index], provider, reference);
+  if (result.error) return result;
+  if (result.changed) {
+    orders[index] = result.order;
+    saveOrders(orders);
+    syncResellerAccess(result.order, orders);
+    saveAudit({ actor: provider, action: 'payment_verified', orderId: result.order.id, amount: result.order.total, transactionReference: reference });
+  }
+  return result;
+}
+
 async function handleApi(req, res, url) {
+  if (req.method === 'POST' && url.pathname === DANA_QRIS_NOTIFY_PATH) return handleDanaNotify(req, res);
   if (!localRequest(req)) return json(res, 403, { error: 'Admin hanya dapat diakses dari komputer ini.' });
   if (req.method === 'GET' && url.pathname === '/api/auth/session') {
     const user = activeUser(req);
@@ -439,6 +602,36 @@ async function handleApi(req, res, url) {
     if (!user) return json(res, 401, { error: 'Masuk untuk melihat pesanan.' });
     const order = readOrders().find((entry) => entry.id === ownOrderMatch[1] && entry.userId === user.id);
     return order ? json(res, 200, { order }) : json(res, 404, { error: 'Pesanan tidak ditemukan.' });
+  }
+  const checkPaymentMatch = url.pathname.match(/^\/api\/orders\/([A-Za-z0-9-]+)\/check-payment$/);
+  if (req.method === 'POST' && checkPaymentMatch) {
+    const user = activeUser(req);
+    if (!user) return json(res, 401, { error: 'Masuk untuk memeriksa pembayaran.' });
+    const order = readOrders().find((entry) => entry.id === checkPaymentMatch[1] && entry.userId === user.id);
+    if (!order) return json(res, 404, { error: 'Pesanan tidak ditemukan.' });
+    if (order.paymentStatus !== 'pending') return json(res, 200, { order });
+    const config = danaConfig();
+    const payment = await danaRequest(DANA_QRIS_STATUS_PATH, {
+      originalPartnerReferenceNo: order.id,
+      serviceCode: '47',
+      amount: { value: `${Number(order.total).toFixed(2)}`, currency: 'IDR' },
+      merchantId: config.merchantId,
+    }, config);
+    if (payment.originalPartnerReferenceNo && payment.originalPartnerReferenceNo !== order.id) return json(res, 502, { error: 'Respons status pembayaran tidak cocok dengan pesanan.' });
+    if (payment.latestTransactionStatus === '00') {
+      if (!matchingDanaPayment(order, payment)) return json(res, 502, { error: 'Data pembayaran DANA tidak cocok dengan nominal pesanan.' });
+      const result = savePaidOrder(order, 'DANA QRIS query', payment.originalReferenceNo || order.id);
+      const updated = result.order || readOrders().find((entry) => entry.id === order.id);
+      return json(res, 200, { order: updated });
+    }
+    if (payment.latestTransactionStatus === '05') {
+      const orders = readOrders();
+      const index = orders.findIndex((entry) => entry.id === order.id);
+      orders[index] = { ...orders[index], paymentStatus: 'cancelled', status: 'cancelled', cancelledAt: new Date().toISOString() };
+      saveOrders(orders);
+      return json(res, 200, { order: orders[index] });
+    }
+    return json(res, 200, { order, providerStatus: payment.latestTransactionStatus || 'pending' });
   }
   if (req.method === 'GET' && url.pathname === '/api/admin/session') {
     const session = activeSession(req);
@@ -541,8 +734,9 @@ async function handleApi(req, res, url) {
     const user = activeUser(req);
     if (!user) return json(res, 401, { error: 'Masuk sebelum membuat pesanan.' });
     const body = await readBody(req);
+    const config = danaConfig();
+    if (!config) return json(res, 503, { error: 'QRIS dinamis belum siap. Admin perlu mengatur kredensial API DANA di server.' });
     const storefront = readStorefront();
-    if (!storefront.payment?.qrisImage) return json(res, 409, { error: 'Pembayaran belum tersedia. Admin perlu mengatur QRIS toko terlebih dahulu.' });
     const products = readProducts();
     const now = new Date().toISOString();
     let kind = 'products';
@@ -571,12 +765,27 @@ async function handleApi(req, res, url) {
       }
     }
     if (!Number.isSafeInteger(total) || total < 1 || total > 100000000) return json(res, 400, { error: 'Total pesanan tidak valid.' });
+    const orderId = `BC${Date.now().toString(36).toUpperCase()}${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
+    const qrPayload = {
+      merchantId: config.merchantId,
+      storeId: config.storeId,
+      partnerReferenceNo: orderId,
+      amount: { value: Number(total).toFixed(2), currency: 'IDR' },
+      validityPeriod: danaTimestamp(new Date(Date.now() + 15 * 60 * 1000)),
+      additionalInfo: { terminalSource: 'MER', envInfo: { sourcePlatform: 'IPG', orderTerminalType: 'WEB', terminalType: 'WEB' } },
+    };
+    const generatedQr = await danaRequest(DANA_QRIS_GENERATE_PATH, qrPayload, config);
+    if (generatedQr.partnerReferenceNo && generatedQr.partnerReferenceNo !== orderId) return json(res, 502, { error: 'Referensi QR dari DANA tidak sesuai. Pesanan belum dibuat.' });
+    const qrisImage = await dynamicQrImage(generatedQr, config);
     const order = {
-      id: `BC-${Date.now().toString(36).toUpperCase()}-${crypto.randomBytes(3).toString('hex').toUpperCase()}`,
+      id: orderId,
       userId: user.id, kind, items, total, currency: 'IDR', createdAt: now,
       paymentStatus: 'pending', paidAt: null, status: 'awaiting_payment', fulfillmentStatus: 'not_started',
-      paymentInstructions: storefront.payment.instructions,
-      qrisImage: storefront.payment.qrisImage,
+      paymentInstructions: 'Pindai QR ini dengan aplikasi yang mendukung QRIS. Pastikan nominal di aplikasi sama dengan total pesanan.',
+      qrisImage,
+      qrisContent: generatedQr.qrContent || '',
+      danaReferenceNo: generatedQr.referenceNo || '',
+      paymentExpiresAt: generatedQr.validityPeriod || qrPayload.validityPeriod,
       resellerTerms: kind === 'reseller-plan' ? storefront.resellerPlan.terms : '',
     };
     const orders = readOrders();
@@ -587,30 +796,7 @@ async function handleApi(req, res, url) {
 
   const adminPaymentMatch = url.pathname.match(/^\/api\/admin\/orders\/([A-Za-z0-9-]+)\/confirm-payment$/);
   if (req.method === 'POST' && adminPaymentMatch) {
-    const admin = requireAdmin(req);
-    if (!admin) return json(res, adminAuthStatus(req), { error: 'Masuk sebagai admin untuk melanjutkan.' });
-    const orders = readOrders();
-    const orderIndex = orders.findIndex((entry) => entry.id === adminPaymentMatch[1]);
-    if (orderIndex < 0) return json(res, 404, { error: 'Pesanan tidak ditemukan.' });
-    const body = await readBody(req);
-    const reference = typeof body?.transactionReference === 'string' ? body.transactionReference.trim().toLocaleLowerCase('id-ID') : '';
-    if (reference && orders.some((entry, index) => index !== orderIndex && entry.paymentStatus === 'paid' && entry.paymentVerification?.transactionReference?.trim().toLocaleLowerCase('id-ID') === reference)) {
-      return json(res, 409, { error: 'Referensi transaksi ini sudah dipakai pada pesanan lain.' });
-    }
-    const result = verifyOrderPayment(orders[orderIndex], body, admin.email);
-    if (result.error) return json(res, 409, { error: result.error });
-    orders[orderIndex] = result.order;
-    saveOrders(orders);
-    const users = readUsers();
-    const userIndex = users.findIndex((entry) => entry.id === result.order.userId);
-    if (userIndex >= 0 && result.changed) {
-      const user = users[userIndex];
-      if (result.order.kind === 'reseller-plan') users[userIndex] = { ...user, resellerPlan: { active: true, orderId: result.order.id, purchasedAt: result.order.paidAt } };
-      else users[userIndex] = { ...user, productEntitlements: resellerEntitlementsFor(user, orders, readProducts()) };
-      saveUsers(users);
-    }
-    if (result.changed) saveAudit({ actor: admin.email, action: 'payment_verified', orderId: result.order.id, amount: result.order.total, transactionReference: result.order.paymentVerification.transactionReference });
-    return json(res, 200, { order: result.order });
+    return json(res, 410, { error: 'Konfirmasi manual dinonaktifkan. Status hanya berubah setelah dikonfirmasi oleh API DANA.' });
   }
 
   const adminRefundMatch = url.pathname.match(/^\/api\/admin\/orders\/([A-Za-z0-9-]+)\/refund$/);
@@ -790,7 +976,7 @@ function serveStatic(req, res, pathname) {
     'Cache-Control': 'no-store',
     'X-Content-Type-Options': 'nosniff',
     'Referrer-Policy': 'strict-origin-when-cross-origin',
-    'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'",
+      'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: https://*.dana.id; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'",
   });
   res.end(req.method === 'HEAD' ? undefined : contents);
 }

@@ -1,6 +1,8 @@
 const assert = require('node:assert/strict');
+const crypto = require('node:crypto');
 const { spawn } = require('node:child_process');
 const { once } = require('node:events');
+const http = require('node:http');
 const fs = require('node:fs/promises');
 const net = require('node:net');
 const os = require('node:os');
@@ -9,9 +11,15 @@ const { after, before, test } = require('node:test');
 
 const root = path.resolve(__dirname, '..');
 let serverProcess;
+let danaServer;
 let baseUrl;
+let danaBaseUrl;
 let tempDirectory;
 let adminCookie;
+let danaRequests = [];
+let danaPublicKey;
+let danaPrivateKey;
+let danaStatus = '01';
 
 async function freePort() {
   const probe = net.createServer();
@@ -42,6 +50,21 @@ function cookieFrom(response) {
 }
 
 before(async () => {
+  const danaKeys = crypto.generateKeyPairSync('rsa', { modulusLength: 2048, publicKeyEncoding: { type: 'spki', format: 'pem' }, privateKeyEncoding: { type: 'pkcs8', format: 'pem' } });
+  danaPrivateKey = danaKeys.privateKey;
+  danaPublicKey = danaKeys.publicKey;
+  danaServer = http.createServer(async (req, res) => {
+    let raw = '';
+    for await (const chunk of req) raw += chunk;
+    danaRequests.push({ method: req.method, path: req.url, headers: req.headers, body: JSON.parse(raw || '{}') });
+    res.writeHead(200, { 'content-type': 'application/json' });
+    if (req.url === '/v1.0/qr/qr-mpm-generate.htm') res.end(JSON.stringify({ responseCode: '2004700', responseMessage: 'Successful', partnerReferenceNo: JSON.parse(raw).partnerReferenceNo, qrContent: '000201010212TEST' }));
+    else if (req.url === '/rest/v1.1/debit/status') res.end(JSON.stringify({ responseCode: '2005500', responseMessage: 'Success', latestTransactionStatus: danaStatus, originalPartnerReferenceNo: JSON.parse(raw).originalPartnerReferenceNo, originalReferenceNo: 'DANA-REF', merchantId: 'merchant-test', amount: JSON.parse(raw).amount }));
+    else res.end(JSON.stringify({ responseCode: '4040000', responseMessage: 'Not found' }));
+  });
+  danaServer.listen(0, '127.0.0.1');
+  await once(danaServer, 'listening');
+  danaBaseUrl = `http://127.0.0.1:${danaServer.address().port}`;
   tempDirectory = await fs.mkdtemp(path.join(os.tmpdir(), 'bacshop-auth-'));
   const productFile = path.join(tempDirectory, 'products.json');
   const uploadDirectory = path.join(tempDirectory, 'uploads');
@@ -51,7 +74,8 @@ before(async () => {
   baseUrl = `http://127.0.0.1:${port}`;
   serverProcess = spawn(process.execPath, ['server.js'], {
     cwd: root,
-    env: { ...process.env, PORT: String(port), BACSHOP_DATA_DIR: tempDirectory, BACSHOP_PRODUCTS_FILE: productFile, BACSHOP_UPLOADS_DIR: uploadDirectory },
+    env: { ...process.env, NODE_ENV: 'test', PORT: String(port), BACSHOP_DATA_DIR: tempDirectory, BACSHOP_PRODUCTS_FILE: productFile, BACSHOP_UPLOADS_DIR: uploadDirectory,
+      DANA_API_BASE_URL: danaBaseUrl, DANA_MERCHANT_ID: 'merchant-test', DANA_CLIENT_ID: 'client-test', DANA_CHANNEL_ID: '95221', DANA_ORIGIN: 'http://localhost.test', DANA_STORE_ID: 'store-test', DANA_PRIVATE_KEY: danaKeys.privateKey, DANA_PUBLIC_KEY: danaKeys.publicKey },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
 
@@ -92,6 +116,7 @@ after(async () => {
     await once(serverProcess, 'exit');
   }
   if (tempDirectory) await fs.rm(tempDirectory, { recursive: true, force: true });
+  if (danaServer) await new Promise((resolve) => danaServer.close(resolve));
 });
 
 test('buyer can register, log in, and read their own profile', async () => {
@@ -132,7 +157,7 @@ test('storefront starts with three active homepage carousel slides', async () =>
   assert.equal(response.status, 200);
   const activeBanners = data.banners.filter((banner) => banner.active);
   assert.equal(activeBanners.length, 3);
-  assert.ok(activeBanners.every((banner) => banner.title.trim() && banner.description.trim()));
+  assert.ok(activeBanners.every((banner) => banner.title === '' && banner.description === '' && banner.image === ''));
 });
 
 test('public catalog omits unverified ratings, sales counts, and sample copy', async () => {
@@ -179,26 +204,53 @@ test('admin can create, update, and delete a catalog product', async () => {
   assert.equal(deleted.data.deleted, 'bulk-item');
 });
 
-test('checkout stays unavailable until admin uploads and selects a QRIS image', async () => {
+test('checkout generates a transaction-specific dynamic QRIS and never uses a static merchant image', async () => {
+  danaRequests = [];
+  await fs.writeFile(path.join(tempDirectory, 'storefront.json'), JSON.stringify({ payment: { qrisImage: '/assets/uploads/legacy-static.png', instructions: 'Pindai QR statis' } }));
+  const storefront = await request('/api/storefront');
+  assert.equal(storefront.data.payment.provider, 'DANA QRIS dinamis');
+  assert.equal(storefront.data.payment.available, true);
+  assert.equal('qrisImage' in storefront.data.payment, false);
   const registration = await request('/api/auth/register', {
     method: 'POST', body: { name: 'QR Buyer', email: 'qris@example.test', password: 'BuyerPass123!' },
   });
   const buyerCookie = cookieFrom(registration.response);
-  const blocked = await request('/api/orders', {
-    method: 'POST', cookie: buyerCookie, body: { kind: 'reseller-plan' },
-  });
-  assert.equal(blocked.response.status, 409);
-  assert.match(blocked.data.error, /QRIS/i);
-
-  const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+j0ioAAAAASUVORK5CYII=';
-  const uploaded = await request('/api/admin/uploads', { method: 'POST', cookie: adminCookie, body: { mimeType: 'image/png', data: png } });
-  const storefront = await request('/api/admin/storefront', { cookie: adminCookie });
-  const ready = { ...storefront.data, payment: { ...storefront.data.payment, qrisImage: uploaded.data.imageUrl } };
-  const saved = await request('/api/admin/storefront', { method: 'PUT', cookie: adminCookie, body: { storefront: ready } });
-  assert.equal(saved.response.status, 200);
   const order = await request('/api/orders', { method: 'POST', cookie: buyerCookie, body: { kind: 'reseller-plan' } });
   assert.equal(order.response.status, 201);
-  assert.equal(order.data.order.qrisImage, uploaded.data.imageUrl);
+  assert.match(order.data.order.qrisImage, /^data:image\/png;base64,/);
+  assert.equal(order.data.order.paymentStatus, 'pending');
+  const generate = danaRequests.find((entry) => entry.path === '/v1.0/qr/qr-mpm-generate.htm');
+  assert.ok(generate);
+  assert.equal(generate.body.amount.value, '149000.00');
+  assert.equal(generate.body.partnerReferenceNo, order.data.order.id);
+  assert.equal(generate.headers['x-partner-id'], 'client-test');
+  const timestamp = generate.headers['x-timestamp'];
+  const digest = crypto.createHash('sha256').update(JSON.stringify(generate.body)).digest('hex');
+  const signatureBase = `POST:/v1.0/qr/qr-mpm-generate.htm:${digest}:${timestamp}`;
+  assert.equal(crypto.verify('RSA-SHA256', Buffer.from(signatureBase), danaPublicKey, Buffer.from(generate.headers['x-signature'], 'base64')), true);
+  const staticConfirm = await request(`/api/admin/orders/${order.data.order.id}/confirm-payment`, { method: 'POST', cookie: adminCookie, body: { transactionReference: 'MANUAL-123' } });
+  assert.equal(staticConfirm.response.status, 410);
+
+  const finishedAt = new Date();
+  const callbackTimestamp = `${new Date(finishedAt.getTime() + 7 * 60 * 60 * 1000).toISOString().slice(0, 19)}+07:00`;
+  const callback = {
+    originalPartnerReferenceNo: order.data.order.id,
+    originalReferenceNo: 'DANA-FINISHED-001',
+    merchantId: 'merchant-test',
+    amount: { value: '149000.00', currency: 'IDR' },
+    latestTransactionStatus: '00',
+    createdTime: callbackTimestamp,
+    finishedTime: callbackTimestamp,
+  };
+  const callbackRaw = JSON.stringify(callback);
+  const callbackDigest = crypto.createHash('sha256').update(callbackRaw).digest('hex');
+  const callbackText = `POST:/api/payments/dana/notify:${callbackDigest}:${callbackTimestamp}`;
+  const signature = crypto.sign('RSA-SHA256', Buffer.from(callbackText), danaPrivateKey).toString('base64');
+  const notified = await request('/api/payments/dana/notify', { method: 'POST', body: callback, headers: { 'x-timestamp': callbackTimestamp, 'x-signature': signature } });
+  assert.equal(notified.response.status, 200);
+  assert.equal(notified.data.responseCode, '2005600');
+  const paidOrder = await request(`/api/orders/${order.data.order.id}`, { cookie: buyerCookie });
+  assert.equal(paidOrder.data.order.paymentStatus, 'paid');
 });
 
 test('verified paid bulk order permanently unlocks only its product reseller price', async () => {
@@ -227,14 +279,18 @@ test('verified paid bulk order permanently unlocks only its product reseller pri
   assert.equal(beforePaid.price, 10000);
   assert.equal(beforePaid.priceContext, 'retail');
 
-  const unverified = await request(`/api/admin/orders/${pendingOrder.data.order.id}/confirm-payment`, {
-    method: 'POST', cookie: buyerCookie, body: { transactionReference: 'DANA-TXN-001' },
-  });
-  assert.equal(unverified.response.status, 403);
+  const unverified = await request(`/api/orders/${pendingOrder.data.order.id}/check-payment`, { method: 'POST', cookie: buyerCookie, body: {} });
+  assert.equal(unverified.response.status, 200);
+  assert.equal(unverified.data.order.paymentStatus, 'pending');
+  const query = danaRequests.find((entry) => entry.path === '/rest/v1.1/debit/status');
+  const queryTimestamp = query.headers['x-timestamp'];
+  const queryDigest = crypto.createHash('sha256').update(JSON.stringify(query.body)).digest('hex');
+  const querySignatureBase = `POST:/rest/v1.1/debit/status:${queryDigest}:${queryTimestamp}`;
+  assert.equal(crypto.verify('RSA-SHA256', Buffer.from(querySignatureBase), danaPublicKey, Buffer.from(query.headers['x-signature'], 'base64')), true);
 
-  const confirmed = await request(`/api/admin/orders/${pendingOrder.data.order.id}/confirm-payment`, {
-    method: 'POST', cookie: adminCookie, body: { transactionReference: 'DANA-TXN-001' },
-  });
+  danaStatus = '00';
+  const confirmed = await request(`/api/orders/${pendingOrder.data.order.id}/check-payment`, { method: 'POST', cookie: buyerCookie, body: {} });
+  danaStatus = '01';
   assert.equal(confirmed.response.status, 200);
   assert.equal(confirmed.data.order.paymentStatus, 'paid');
 
@@ -242,10 +298,8 @@ test('verified paid bulk order permanently unlocks only its product reseller pri
     method: 'POST', cookie: buyerCookie, body: { kind: 'reseller-plan' },
   });
   assert.equal(secondOrder.response.status, 201);
-  const reusedReference = await request(`/api/admin/orders/${secondOrder.data.order.id}/confirm-payment`, {
-    method: 'POST', cookie: adminCookie, body: { transactionReference: 'dana-txn-001' },
-  });
-  assert.equal(reusedReference.response.status, 409);
+  const manualConfirmation = await request(`/api/admin/orders/${secondOrder.data.order.id}/confirm-payment`, { method: 'POST', cookie: adminCookie, body: { transactionReference: 'dana-txn-001' } });
+  assert.equal(manualConfirmation.response.status, 410);
 
   const buyerProducts = await request('/api/products', { cookie: buyerCookie });
   const unlocked = buyerProducts.data.products.find((entry) => entry.id === 'bulk-item');
@@ -317,9 +371,9 @@ test('verified reseller plan unlocks every configured reseller price permanently
   assert.equal(myOrders.data.orders[0].id, order.data.order.id);
   assert.equal(myOrders.data.orders[0].paymentStatus, 'pending');
 
-  const paid = await request(`/api/admin/orders/${order.data.order.id}/confirm-payment`, {
-    method: 'POST', cookie: adminCookie, body: { transactionReference: 'DANA-PLAN-001' },
-  });
+  danaStatus = '00';
+  const paid = await request(`/api/orders/${order.data.order.id}/check-payment`, { method: 'POST', cookie: buyerCookie, body: {} });
+  danaStatus = '01';
   assert.equal(paid.response.status, 200);
   const session = await request('/api/auth/session', { cookie: buyerCookie });
   assert.equal(session.data.user.resellerPlan, true);

@@ -73,7 +73,7 @@
   ];
 
   const app = document.querySelector('#app');
-  let STOREFRONT = { categories: CATEGORIES, banners: [], promotions: [], resellerPlan: { price: 149000, terms: '' }, payment: { qrisImage: '', instructions: '' } };
+  let STOREFRONT = { categories: CATEGORIES, banners: [], promotions: [], resellerPlan: { price: 149000, terms: '' }, payment: { provider: 'DANA QRIS dinamis' } };
   let currentUser = null;
   let toastTimer;
   let carouselTimer;
@@ -261,6 +261,13 @@
     </nav>`;
   }
 
+  function setCartQuantity(id, value) {
+    const numeric = Number(value);
+    const quantity = Number.isFinite(numeric) ? Math.max(1, Math.min(99, Math.floor(numeric))) : 1;
+    writeCart(cart.map((item) => item.id === id ? { ...item, quantity } : item));
+    render();
+  }
+
   function authShell(content) {
     return `<div class="auth-shell"><header class="auth-header"><a class="auth-logo" href="#/" aria-label="Bacshop beranda">Bacshop</a></header><main class="auth-main" id="main" tabindex="-1">${content}</main></div>`;
   }
@@ -301,10 +308,7 @@
     const recent = PRODUCTS.slice(3, 8).map(productCard).join('');
     const banners = (STOREFRONT.banners || []).filter((banner) => banner.active).slice(0, 10);
     const activeBanners = banners.length ? banners : [{ title: 'Produk digital, tanpa bingung.', description: 'Bandingkan durasi, cara aktivasi, dan ketentuan sebelum memilih.', image: '', href: '#/kategori/semua' }];
-    const slides = activeBanners.map((banner, index) => `<div class="hero-slide ${index === 0 ? 'is-active' : 'hero-slide-image'}" data-hero-slide role="group" aria-roledescription="slide" aria-label="${index + 1} dari ${activeBanners.length}" ${index ? 'aria-hidden="true" inert' : ''}>
-      ${index === 0 || banner.title || banner.description ? `<div class="hero-copy"><h1>${escapeHtml(banner.title || 'Pilihan Bacshop')}</h1>${banner.description ? `<p>${escapeHtml(banner.description)}</p>` : ''}<a class="button button-primary" href="${escapeHtml(banner.href || '#/kategori/semua')}">Jelajahi produk ${feather('arrow-right')}</a></div>` : ''}
-      ${banner.image ? `<div class="hero-image-placeholder hero-uploaded-image" role="img" aria-label="${escapeHtml(banner.title || 'Banner toko')}" style="background-image:url('${escapeHtml(banner.image)}')"></div>` : `<div class="${index ? 'hero-secondary-placeholder' : 'hero-image-placeholder'} hero-fallback-image" role="img" aria-label="Banner ${index + 1}"></div>`}
-    </div>`).join('');
+    const slides = activeBanners.map((_, index) => `<div class="hero-slide ${index === 0 ? 'is-active' : ''}" data-hero-slide role="group" aria-roledescription="slide" aria-label="Banner ${index + 1} dari ${activeBanners.length}" ${index ? 'aria-hidden="true" inert' : ''}><div class="hero-blank-placeholder" aria-hidden="true"></div></div>`).join('');
     const dots = activeBanners.map((_, index) => `<button type="button" data-hero-to="${index}" aria-label="Banner ${index + 1}" aria-pressed="${index === 0}"></button>`).join('');
     const promos = (STOREFRONT.promotions || []).filter((promo) => promo.active).slice(0, 4);
     const promoStrip = promos.length ? `<section class="section home-promo-section">${sectionHead('Promo','Pilihan yang sedang tersedia.',`<a class="text-link" href="#/promo">Lihat semua ${feather('arrow-right')}</a>`)}<div class="home-promo-grid">${promos.map((promo) => `<a class="home-promo-card" href="${escapeHtml(promo.href)}">${promo.image ? `<img src="${escapeHtml(promo.image)}" alt="" loading="lazy" />` : ''}<span><strong>${escapeHtml(promo.title)}</strong><span>${escapeHtml(promo.description)}</span></span></a>`).join('')}</div></section>` : '';
@@ -418,16 +422,20 @@
     const rows = availableCart.map((item) => ({ ...item, product: PRODUCTS.find((product) => product.id === item.id) })).filter((item) => item.product);
     const total = rows.reduce((sum, item) => sum + item.product.price * item.quantity, 0);
     if (!rows.length) return `<nav class="breadcrumbs" aria-label="Breadcrumb"><a href="#/">Beranda</a><span aria-hidden="true">›</span><span>Keranjang</span></nav><section class="page-panel"><div class="page-heading"><h1>Keranjangmu</h1><p>Produk yang kamu pilih akan tersimpan di browser ini.</p></div><div class="empty-state"><h3>Keranjang masih kosong</h3><p>Jelajahi katalog dan tambahkan produk yang kamu butuhkan.</p><a class="button button-primary button-small" href="#/kategori/semua">Jelajahi produk</a></div></section>`;
-    return `<nav class="breadcrumbs" aria-label="Breadcrumb"><a href="#/">Beranda</a><span aria-hidden="true">›</span><span>Keranjang</span></nav><section class="page-panel"><div class="page-heading"><h1>Keranjangmu</h1><p>Periksa jumlah dan harga setiap produk sebelum membuat pesanan.</p></div><div class="cart-layout"><div class="cart-list">${rows.map(({ product, quantity }) => `<article class="cart-row"><div class="cart-thumb ${product.image ? 'product-media' : 'image-placeholder'}" ${product.image ? `style="background-image:url('${escapeHtml(product.image)}')"` : ''} role="img" aria-label="Gambar ${escapeHtml(product.name)}"></div><div><h2><a href="#/produk/${product.slug}">${escapeHtml(product.name)}</a></h2><span class="cart-meta">${escapeHtml(product.duration)} · ${escapeHtml(product.fulfillment)}</span><strong class="cart-price">${rupiah(product.price)}</strong><div class="cart-controls"><button class="qty-button" type="button" data-quantity="${product.id}" data-delta="-1" aria-label="Kurangi jumlah ${escapeHtml(product.name)}">Kurangi</button><span class="qty-value">${quantity}</span><button class="qty-button" type="button" data-quantity="${product.id}" data-delta="1" aria-label="Tambah jumlah ${escapeHtml(product.name)}">Tambah</button><button class="remove-button" type="button" data-remove="${product.id}">Hapus</button></div></div><div class="cart-side"><strong class="cart-price">${rupiah(product.price * quantity)}</strong></div></article>`).join('')}</div><aside class="summary-card"><h2>Ringkasan belanja</h2><div class="summary-line"><span>Subtotal (${cartQuantity()} item)</span><span>${rupiah(total)}</span></div><div class="summary-total"><span>Total</span><span>${rupiah(total)}</span></div><a class="button button-primary" href="#/checkout">Lanjut ke pembayaran</a><p class="summary-note">Pembayaran QRIS diverifikasi admin setelah transaksi dicocokkan.</p></aside></div></section>`;
+    return `<nav class="breadcrumbs" aria-label="Breadcrumb"><a href="#/">Beranda</a><span aria-hidden="true">›</span><span>Keranjang</span></nav><section class="page-panel"><div class="page-heading"><h1>Keranjangmu</h1><p>Periksa jumlah dan harga setiap produk sebelum membuat pesanan.</p></div><div class="cart-layout"><div class="cart-list">${rows.map(({ product, quantity }) => `<article class="cart-row"><div class="cart-thumb ${product.image ? 'product-media' : 'image-placeholder'}" ${product.image ? `style="background-image:url('${escapeHtml(product.image)}')"` : ''} role="img" aria-label="Gambar ${escapeHtml(product.name)}"></div><div><h2><a href="#/produk/${product.slug}">${escapeHtml(product.name)}</a></h2><span class="cart-meta">${escapeHtml(product.duration)} · ${escapeHtml(product.fulfillment)}</span><strong class="cart-price">${rupiah(product.price)}</strong><div class="cart-controls"><button class="qty-button" type="button" data-quantity="${product.id}" data-delta="-1" aria-label="Kurangi jumlah ${escapeHtml(product.name)}">${feather('minus')}</button><input class="qty-value" type="number" min="1" max="99" inputmode="numeric" value="${quantity}" data-cart-quantity="${product.id}" aria-label="Jumlah ${escapeHtml(product.name)}" /><button class="qty-button" type="button" data-quantity="${product.id}" data-delta="1" aria-label="Tambah jumlah ${escapeHtml(product.name)}">${feather('plus')}</button><button class="remove-button" type="button" data-remove="${product.id}">Hapus</button></div></div><div class="cart-side"><strong class="cart-price">${rupiah(product.price * quantity)}</strong></div></article>`).join('')}</div><aside class="summary-card"><h2>Ringkasan belanja</h2><div class="summary-line"><span>Subtotal (${cartQuantity()} item)</span><span>${rupiah(total)}</span></div><div class="summary-total"><span>Total</span><span>${rupiah(total)}</span></div><a class="button button-primary" href="#/checkout">Lanjut ke pembayaran</a><p class="summary-note">QRIS unik untuk pesanan akan dibuat saat checkout.</p></aside></div></section>`;
   }
 
   function renderInfoPage(path) {
     if (path === '/program-reseller') {
       const price = Number(STOREFRONT.resellerPlan?.price) || 149000;
+      const bulkProducts = PRODUCTS.filter((product) => Number(product.bulkUnlockQuantity) >= 2);
+      const bulkSelector = bulkProducts.length ? `<label class="bulk-product-picker">Produk<select data-bulk-product>${bulkProducts.map((product, index) => `<option value="${escapeHtml(product.id)}" data-minimum="${Number(product.bulkUnlockQuantity)}" ${index === 0 ? 'selected' : ''}>${escapeHtml(product.name)}</option>`).join('')}</select></label><label class="bulk-quantity-picker">Jumlah pembelian<input type="number" min="1" max="99" value="${Math.min(99, Number(bulkProducts[0].bulkUnlockQuantity))}" inputmode="numeric" data-bulk-quantity /></label><p class="bulk-calculator-result" data-bulk-result aria-live="polite"></p>` : '<p class="bulk-calculator-result">Belum ada produk dengan minimum pembelian bulk. Admin dapat mengaturnya dari halaman produk.</p>';
       return `<nav class="breadcrumbs" aria-label="Breadcrumb"><a href="#/">Beranda</a><span aria-hidden="true">›</span><span>Program reseller</span></nav>
-        <section class="page-panel reseller-program-page"><div class="page-heading"><h1>Harga reseller</h1><p>Belanja seperti biasa. Pembelian bulk membuka harga khusus pada produk yang dibeli; paket reseller membuka harga khusus di seluruh katalog.</p></div>
-          ${currentUser?.resellerPlan ? `<div class="account-status-card"><strong>Akses reseller aktif</strong><p>Harga reseller berlaku di seluruh katalog dan akses paket ini tidak kedaluwarsa.</p><a class="button button-primary" href="#/kategori/semua">Lihat produk</a></div>` : `<div class="reseller-plan-card"><span>Paket reseller</span><strong>${rupiah(price)}</strong><p>${escapeHtml(STOREFRONT.resellerPlan?.terms || 'Sekali bayar. Harga reseller terbuka permanen di seluruh katalog setelah pembayaran diverifikasi.')}</p>${currentUser ? `<button class="button button-primary" type="button" data-buy-reseller-plan>Beli paket reseller</button>` : `<a class="button button-primary" href="#/masuk?next=%2Fprogram-reseller">Masuk untuk membeli</a>`}</div>`}
-          <div class="reseller-how"><h2>Akses per produk</h2><p>Setelah pesanan bulk lunas dan diverifikasi, harga reseller produk tersebut terbuka permanen. Minimum pembelian tertera di halaman produk.</p></div><a class="text-link" href="#/faq">Baca FAQ</a>
+        <section class="page-panel reseller-program-page"><div class="page-heading"><h1>Pilih cara mendapat harga reseller</h1><p>Akses terbuka setelah pembayaran terverifikasi. Pilih produk bulk atau buka harga khusus di seluruh katalog.</p></div>
+          <div class="reseller-choice-tabs" role="tablist" aria-label="Pilihan akses reseller"><button type="button" role="tab" aria-selected="true" data-reseller-choice="bulk">Produk tertentu</button><button type="button" role="tab" aria-selected="false" data-reseller-choice="all">Seluruh katalog</button></div>
+          <section class="reseller-choice-panel" data-reseller-panel="bulk"><div class="reseller-choice-copy"><span class="reseller-choice-kicker">Akses per produk</span><h2>Mulai dari produk yang mau dijual</h2><p>Beli sesuai jumlah minimum dalam satu pesanan. Setelah pembayaran dikonfirmasi DANA, harga reseller untuk produk itu terbuka permanen.</p></div><div class="bulk-calculator">${bulkSelector}<a class="text-link" href="#/kategori/semua">Cari produk bulk ${feather('arrow-right')}</a></div></section>
+          <section class="reseller-choice-panel" data-reseller-panel="all" hidden><div class="reseller-choice-copy"><span class="reseller-choice-kicker">Satu kali bayar</span><h2>Harga khusus di seluruh katalog</h2><p>Akses reseller berlaku permanen setelah pembayaran paket berhasil dikonfirmasi DANA.</p></div>${currentUser?.resellerPlan ? `<div class="reseller-plan-card"><strong>Akses sudah aktif</strong><p>Harga reseller di seluruh katalog sudah terbuka untuk akunmu.</p><a class="button button-primary" href="#/kategori/semua">Lihat produk</a></div>` : `<div class="reseller-plan-card"><span>Paket seluruh katalog</span><strong>${rupiah(price)}</strong><p>${escapeHtml(STOREFRONT.resellerPlan?.terms || 'Sekali bayar. Akses berlaku setelah pembayaran dikonfirmasi.')}</p>${STOREFRONT.payment?.available ? currentUser ? `<button class="button button-primary" type="button" data-buy-reseller-plan>Beli paket reseller</button>` : `<a class="button button-primary" href="#/masuk?next=%2Fprogram-reseller">Masuk untuk membeli</a>` : '<button class="button button-primary" type="button" disabled>QRIS DANA belum siap</button><p class="summary-note">Pembelian paket tersedia setelah koneksi API DANA dikonfigurasi.</p>'}</div>`}</section>
+          <a class="text-link" href="#/faq">Baca FAQ reseller</a>
         </section>`;
     }
     if (path === '/promo') {
@@ -448,9 +456,9 @@
       ['Berapa lama proses aktivasi?', 'Estimasi proses dapat berbeda pada setiap produk. Periksa informasi proses pada halaman detail produk sebelum melanjutkan.'],
       ['Apakah saya perlu akun layanan tertentu?', 'Beberapa produk memerlukan akun pribadi atau akun tujuan. Persyaratan dicantumkan pada detail masing-masing produk.'],
       ['Bagaimana saya mendapat harga reseller?', 'Pembelian bulk membuka harga reseller secara permanen pada produk yang dibeli. Paket satu kali mulai Rp149.000 membuka harga reseller di seluruh katalog setelah pembayaran diverifikasi.'],
-      ['Kapan pesanan dianggap lunas?', 'Admin mencocokkan transaksi pada DANA Bisnis. Status pesanan berubah menjadi lunas setelah pembayaran terverifikasi.'],
+      ['Kapan pesanan dianggap lunas?', 'Status akan berubah setelah DANA mengirim konfirmasi atau hasil pemeriksaan transaksi menunjukkan pembayaran berhasil.'],
     ];
-    return `<nav class="breadcrumbs" aria-label="Breadcrumb"><a href="#/">Beranda</a><span aria-hidden="true">›</span><span>FAQ</span></nav><section class="page-panel"><div class="page-heading"><h1>Pertanyaan yang sering diajukan</h1><p>Informasi singkat tentang produk, pembayaran, dan pesanan.</p></div><div class="faq-list">${items.map(([question,answer]) => `<details><summary>${escapeHtml(question)}</summary><p>${escapeHtml(answer)}</p></details>`).join('')}</div><aside class="faq-support"><div><strong>Masih butuh bantuan?</strong><span>Hubungi admin di Telegram @Mubacs.</span></div><a class="button button-primary" href="https://t.me/Mubacs" target="_blank" rel="noopener noreferrer">Hubungi admin</a></aside></section>`;
+    return `<nav class="breadcrumbs" aria-label="Breadcrumb"><a href="#/">Beranda</a><span aria-hidden="true">›</span><span>FAQ</span></nav><section class="page-panel faq-page"><div class="page-heading"><h1>Pertanyaan yang sering diajukan</h1><p>Jawaban soal produk, pembayaran, dan harga reseller.</p></div><label class="faq-search">Cari pertanyaan<input type="search" placeholder="Contoh: pembayaran atau reseller" data-faq-search /></label><div class="faq-topics" role="group" aria-label="Filter pertanyaan"><button class="is-active" type="button" data-faq-topic="semua" aria-pressed="true">Semua</button><button type="button" data-faq-topic="produk" aria-pressed="false">Produk</button><button type="button" data-faq-topic="pembayaran" aria-pressed="false">Pembayaran</button><button type="button" data-faq-topic="reseller" aria-pressed="false">Reseller</button></div><div class="faq-list">${items.map(([question,answer], index) => { const topic = index < 3 ? 'produk' : index === 3 ? 'reseller' : 'pembayaran'; return `<details data-faq-item data-topic="${topic}" data-search="${escapeHtml(`${question} ${answer}`.toLocaleLowerCase('id-ID'))}"><summary>${escapeHtml(question)}</summary><p>${escapeHtml(answer)}</p></details>`; }).join('')}<p class="faq-empty" data-faq-empty hidden>Tidak ada pertanyaan yang cocok. Coba kata kunci lain.</p></div><aside class="faq-support"><div><strong>Belum menemukan jawabannya?</strong><span>Hubungi admin untuk bantuan terkait pesanan atau produk.</span></div><a class="button button-primary" href="https://t.me/Mubacs" target="_blank" rel="noopener noreferrer">Hubungi admin</a></aside></section>`;
   }
 
   function renderAuthPage(path, params) {
@@ -468,6 +476,7 @@
   }
 
   function orderStatusText(order) {
+    if (order.paymentStatus === 'cancelled') return 'QRIS kedaluwarsa';
     if (order.paymentStatus === 'refunded') return 'Dana dikembalikan';
     if (order.paymentStatus === 'paid' && order.fulfillmentStatus === 'fulfilled') return 'Selesai';
     if (order.paymentStatus === 'paid') return 'Pembayaran terverifikasi';
@@ -482,16 +491,18 @@
   function renderOrderDetailPage(order) {
     const isPlan = order.kind === 'reseller-plan';
     const details = isPlan ? '<li><span>Akses</span><strong>Harga reseller seluruh katalog · permanen</strong></li>' : order.items.map((item) => `<li><span>${escapeHtml(item.name)} × ${item.quantity}</span><strong>${rupiah(item.lineTotal)}</strong></li>`).join('');
-    const qr = order.paymentStatus === 'pending' && order.qrisImage ? `<div class="qris-frame"><img src="${escapeHtml(order.qrisImage)}" alt="QRIS Bacshop" /></div>` : '';
-    const paymentMessage = order.paymentStatus === 'pending' ? `<p class="payment-pending-copy">${escapeHtml(order.paymentInstructions || 'Pindai QRIS lalu masukkan jumlah yang tertera. Admin akan mencocokkan pembayaran di DANA Bisnis.')}</p>` : order.paymentStatus === 'paid' ? '<p class="payment-success-copy">Pembayaran sudah dicocokkan oleh admin.</p>' : '<p class="payment-failed-copy">Pembayaran pesanan ini sudah dikembalikan.</p>';
-    return `<nav class="breadcrumbs" aria-label="Breadcrumb"><a href="#/">Beranda</a><span aria-hidden="true">›</span><a href="#/pesanan">Pesanan</a><span aria-hidden="true">›</span><span>${escapeHtml(order.id)}</span></nav><section class="page-panel order-detail-page"><div class="order-detail-heading"><div><span class="product-category">${escapeHtml(order.id)}</span><h1>${order.kind === 'reseller-plan' ? 'Paket reseller' : 'Detail pesanan'}</h1><p>${new Date(order.createdAt).toLocaleString('id-ID')}</p></div><span class="status-pill ${order.paymentStatus === 'paid' ? 'status-success' : order.paymentStatus === 'refunded' ? 'status-danger' : 'status-warning'}">${orderStatusText(order)}</span></div><div class="order-detail-grid"><div><section class="order-detail-card"><h2>Rincian</h2><ul class="term-list">${details}</ul><div class="summary-total"><span>Total</span><strong>${rupiah(order.total)}</strong></div></section><section class="order-detail-card"><h2>Status pemenuhan</h2><p>${escapeHtml(order.fulfillmentStatus || 'not_started') === 'fulfilled' ? 'Produk sudah dipenuhi.' : 'Pemenuhan produk diproses terpisah dari status pembayaran.'}</p></section></div><aside class="order-payment-card"><h2>${order.paymentStatus === 'pending' ? 'Bayar dengan QRIS' : 'Status pembayaran'}</h2>${qr}${paymentMessage}<strong class="payment-amount">${rupiah(order.total)}</strong>${order.paymentStatus === 'pending' && !order.qrisImage ? '<p class="summary-note">QRIS belum tersedia. Hubungi admin sebelum melakukan pembayaran.</p>' : ''}${order.paymentStatus === 'pending' ? '<button class="button" type="button" data-refresh-order>Perbarui status</button>' : ''}${isPlan ? `<details class="order-terms"><summary>Syarat paket reseller</summary><p>${escapeHtml(order.resellerTerms || '')}</p></details>` : ''}</aside></div><a class="text-link" href="#/pesanan">Kembali ke pesanan</a></section>`;
+    const qr = order.paymentStatus === 'pending' && order.qrisImage ? `<div class="qris-frame"><img src="${escapeHtml(order.qrisImage)}" alt="QRIS dinamis untuk pesanan ${escapeHtml(order.id)}" /></div>` : '';
+    const paymentMessage = order.paymentStatus === 'pending' ? `<p class="payment-pending-copy">${escapeHtml(order.paymentInstructions || 'Pindai QR ini dengan aplikasi pembayaran yang mendukung QRIS.')}</p>` : order.paymentStatus === 'paid' ? '<p class="payment-success-copy">Pembayaran terkonfirmasi dari DANA.</p>' : order.paymentStatus === 'cancelled' ? '<p class="payment-failed-copy">QR ini sudah kedaluwarsa. Buat pesanan baru untuk mendapatkan QRIS yang berlaku.</p>' : '<p class="payment-failed-copy">Pembayaran pesanan ini sudah dikembalikan.</p>';
+    const expires = order.paymentExpiresAt ? `<p class="qris-expiration">Berlaku sampai ${escapeHtml(new Date(order.paymentExpiresAt).toLocaleString('id-ID'))}</p>` : '';
+    return `<nav class="breadcrumbs" aria-label="Breadcrumb"><a href="#/">Beranda</a><span aria-hidden="true">›</span><a href="#/pesanan">Pesanan</a><span aria-hidden="true">›</span><span>${escapeHtml(order.id)}</span></nav><section class="page-panel order-detail-page"><div class="order-detail-heading"><div><span class="product-category">${escapeHtml(order.id)}</span><h1>${order.kind === 'reseller-plan' ? 'Paket reseller' : 'Detail pesanan'}</h1><p>${new Date(order.createdAt).toLocaleString('id-ID')}</p></div><span class="status-pill ${order.paymentStatus === 'paid' ? 'status-success' : order.paymentStatus === 'refunded' || order.paymentStatus === 'cancelled' ? 'status-danger' : 'status-warning'}">${orderStatusText(order)}</span></div><div class="order-detail-grid"><div><section class="order-detail-card"><h2>Rincian</h2><ul class="term-list">${details}</ul><div class="summary-total"><span>Total</span><strong>${rupiah(order.total)}</strong></div></section><section class="order-detail-card"><h2>Status pemenuhan</h2><p>${escapeHtml(order.fulfillmentStatus || 'not_started') === 'fulfilled' ? 'Produk sudah dipenuhi.' : 'Pesanan mulai diproses setelah pembayaran terkonfirmasi.'}</p></section></div><aside class="order-payment-card"><h2>${order.paymentStatus === 'pending' ? 'Bayar dengan QRIS' : 'Status pembayaran'}</h2>${qr}${expires}${paymentMessage}<strong class="payment-amount">${rupiah(order.total)}</strong>${order.paymentStatus === 'pending' ? '<button class="button button-primary" type="button" data-refresh-order>Periksa pembayaran</button>' : ''}${isPlan ? `<details class="order-terms"><summary>Syarat paket reseller</summary><p>${escapeHtml(order.resellerTerms || '')}</p></details>` : ''}</aside></div><a class="text-link" href="#/pesanan">Kembali ke pesanan</a></section>`;
   }
 
   function renderCheckoutPage() {
     const items = cart.map((item) => ({ ...item, product: PRODUCTS.find((product) => product.id === item.id) })).filter((item) => item.product);
     const total = items.reduce((sum, item) => sum + item.product.price * item.quantity, 0);
     if (!items.length) return `<section class="page-panel"><div class="empty-state"><h1>Keranjang masih kosong</h1><p>Pilih produk dari katalog sebelum melanjutkan.</p><a class="button button-primary" href="#/kategori/semua">Lihat katalog</a></div></section>`;
-    return `<nav class="breadcrumbs" aria-label="Breadcrumb"><a href="#/">Beranda</a><span aria-hidden="true">›</span><a href="#/keranjang">Keranjang</a><span aria-hidden="true">›</span><span>Pembayaran</span></nav><section class="page-panel checkout-page"><div class="page-heading"><h1>Ringkasan pesanan</h1><p>Setelah pesanan dibuat, QRIS dan petunjuk pembayaran akan tampil.</p></div><div class="checkout-layout"><div class="checkout-items">${items.map((item) => `<div class="checkout-item"><span>${escapeHtml(item.product.name)} × ${item.quantity}</span><strong>${rupiah(item.product.price * item.quantity)}</strong></div>`).join('')}</div><aside class="summary-card"><h2>Total pembayaran</h2><div class="summary-total"><span>Total</span><strong>${rupiah(total)}</strong></div><button class="button button-primary" type="button" data-create-order>Buat pesanan</button><p class="summary-note">Pembayaran QRIS akan dicocokkan admin sebelum pesanan diproses.</p></aside></div></section>`;
+    const paymentReady = Boolean(STOREFRONT.payment?.available);
+    return `<nav class="breadcrumbs" aria-label="Breadcrumb"><a href="#/">Beranda</a><span aria-hidden="true">›</span><a href="#/keranjang">Keranjang</a><span aria-hidden="true">›</span><span>Pembayaran</span></nav><section class="page-panel checkout-page"><div class="page-heading"><h1>Periksa pesanan</h1><p>Pastikan produk dan jumlahnya sudah benar sebelum membayar.</p></div><div class="checkout-layout"><section class="checkout-items"><h2>Produk yang dipesan</h2>${items.map((item) => `<div class="checkout-item"><span><strong>${escapeHtml(item.product.name)}</strong><small>${item.quantity} × ${rupiah(item.product.price)}</small></span><strong>${rupiah(item.product.price * item.quantity)}</strong></div>`).join('')}<p class="checkout-payment-hint"><span class="feather-icon" data-icon="lock"></span> QRIS unik dibuat setelah pesanan dikirim. Pembayaran dikonfirmasi otomatis oleh DANA.</p></section><aside class="summary-card"><h2>Ringkasan pembayaran</h2><div class="summary-line"><span>Subtotal</span><span>${rupiah(total)}</span></div><div class="summary-total"><span>Total</span><strong>${rupiah(total)}</strong></div><button class="button button-primary" type="button" data-create-order ${paymentReady ? '' : 'disabled'}>${paymentReady ? 'Buat pesanan' : 'QRIS DANA belum siap'}</button><p class="summary-note">${paymentReady ? 'QRIS dinamis khusus pesanan ini akan dibuat oleh DANA.' : 'Checkout tersedia setelah admin mengatur kredensial API DANA di server.'}</p></aside></div></section>`;
   }
 
   function safeReturnPath(value, fallback = '/') {
@@ -626,7 +637,19 @@
       }
     });
 
-    app.querySelector('[data-refresh-order]')?.addEventListener('click', () => { void render(); });
+    app.querySelector('[data-refresh-order]')?.addEventListener('click', async (event) => {
+      const button = event.currentTarget;
+      const orderId = window.location.hash.match(/^#\/pesanan\/([^?]+)/)?.[1];
+      if (!orderId) return;
+      button.disabled = true;
+      try {
+        await requestApi(`/api/orders/${encodeURIComponent(decodeURIComponent(orderId))}/check-payment`, { method: 'POST', body: {} });
+        await render();
+      } catch (error) {
+        button.disabled = false;
+        showToast(error.message);
+      }
+    });
   }
 
   function adminAuthPage(setupRequired) {
@@ -682,7 +705,7 @@
       <section class="admin-section"><div class="admin-section-heading"><h2>Banner Beranda</h2><button class="button button-small" type="button" data-add-cms-row="banner">Tambah banner</button></div><div class="admin-cms-grid" data-cms-list="banner">${storefront.banners.map((item, index) => cmsRow('banner', item, index)).join('')}</div></section>
       <section class="admin-section"><div class="admin-section-heading"><h2>Promo</h2><button class="button button-small" type="button" data-add-cms-row="promotion">Tambah promo</button></div><div class="admin-cms-grid" data-cms-list="promotion">${storefront.promotions.map((item, index) => cmsRow('promotion', item, index)).join('')}</div></section>
       <section class="admin-section"><div class="admin-section-heading"><h2>Paket reseller</h2></div><div class="admin-fields"><label>Harga paket (Rp)<input name="resellerPlanPrice" type="number" min="149000" step="1000" value="${Number(storefront.resellerPlan.price)}" required /></label><label class="admin-wide">Syarat dan ketentuan<textarea name="resellerPlanTerms" rows="4" maxlength="5000" required>${escapeHtml(storefront.resellerPlan.terms)}</textarea></label></div></section>
-      <section class="admin-section" data-payment-settings><div class="admin-section-heading"><h2>Pembayaran QRIS statis</h2></div><div class="admin-fields">${imageUploadField('Gambar QRIS DANA Bisnis', storefront.payment.qrisImage || '')}<label class="admin-wide">Petunjuk pembayaran<textarea name="paymentInstructions" rows="3" maxlength="1000" required>${escapeHtml(storefront.payment.instructions)}</textarea></label></div></section>
+      <section class="admin-section"><div class="admin-section-heading"><h2>Pembayaran DANA</h2></div><div class="payment-config-note"><strong>QRIS dinamis ${storefront.payment?.available ? 'siap digunakan' : 'belum dikonfigurasi'}.</strong><p>QR dibuat untuk setiap pesanan. Kredensial DANA hanya disimpan di server; QR dari gambar unggahan tidak dipakai untuk checkout. Webhook DANA diarahkan ke <code>/api/payments/dana/notify</code>.</p><a href="https://dashboard.dana.id/api-docs-v2/api/qris-acquirer/overview" target="_blank" rel="noreferrer">Dokumentasi integrasi DANA</a></div></section>
       <p class="admin-form-message" data-cms-message role="status" aria-live="polite"></p><button class="button button-primary" type="submit">Simpan konten</button></form>`;
   }
 
@@ -691,7 +714,7 @@
   }
 
   function adminOrderCard(order) {
-    return `<article class="admin-order-card"><div class="admin-order-head"><div><strong>${escapeHtml(order.id)}</strong><span>${escapeHtml(order.customer?.name || 'Akun tidak tersedia')} · ${escapeHtml(order.customer?.email || '')}</span></div><strong>${rupiah(order.total)}</strong></div><p>${order.kind === 'reseller-plan' ? 'Paket reseller' : order.items.map((item) => `${escapeHtml(item.name)} × ${item.quantity}`).join(', ')}</p><div class="admin-order-status"><span class="status-pill">Pembayaran: ${escapeHtml(order.paymentStatus)}</span><span class="status-pill">Pemenuhan: ${escapeHtml(order.fulfillmentStatus)}</span></div>${order.paymentStatus === 'pending' ? `<form class="admin-verify-form" data-confirm-payment="${escapeHtml(order.id)}"><label>Referensi transaksi DANA<input name="transactionReference" minlength="3" maxlength="120" required placeholder="Cocokkan dengan transaksi DANA Bisnis" /></label><button class="button button-primary" type="submit">Konfirmasi pembayaran</button></form>` : order.paymentVerification ? `<p class="admin-verified-note">Diverifikasi ${new Date(order.paymentVerification.verifiedAt).toLocaleString('id-ID')} · ${escapeHtml(order.paymentVerification.transactionReference)}</p>` : ''}${order.paymentStatus === 'paid' ? `<form class="admin-fulfillment-form" data-update-fulfillment="${escapeHtml(order.id)}"><label>Status pemenuhan<select name="status"><option value="not_started" ${order.fulfillmentStatus === 'not_started' ? 'selected' : ''}>Belum dimulai</option><option value="processing" ${order.fulfillmentStatus === 'processing' ? 'selected' : ''}>Diproses</option><option value="needs_customer_input" ${order.fulfillmentStatus === 'needs_customer_input' ? 'selected' : ''}>Menunggu data pelanggan</option><option value="fulfilled" ${order.fulfillmentStatus === 'fulfilled' ? 'selected' : ''}>Selesai</option></select></label><label>Catatan pemenuhan<input name="note" maxlength="1000" value="${escapeHtml(order.fulfillmentNote || '')}" /></label><button class="button button-small" type="submit">Simpan status</button></form>` : ''}</article>`;
+    return `<article class="admin-order-card"><div class="admin-order-head"><div><strong>${escapeHtml(order.id)}</strong><span>${escapeHtml(order.customer?.name || 'Akun tidak tersedia')} · ${escapeHtml(order.customer?.email || '')}</span></div><strong>${rupiah(order.total)}</strong></div><p>${order.kind === 'reseller-plan' ? 'Paket reseller' : order.items.map((item) => `${escapeHtml(item.name)} × ${item.quantity}`).join(', ')}</p><div class="admin-order-status"><span class="status-pill">Pembayaran: ${escapeHtml(order.paymentStatus)}</span><span class="status-pill">Pemenuhan: ${escapeHtml(order.fulfillmentStatus)}</span></div>${order.paymentVerification ? `<p class="admin-verified-note">Dikonfirmasi DANA · ${new Date(order.paymentVerification.verifiedAt).toLocaleString('id-ID')}</p>` : order.paymentStatus === 'pending' ? '<p class="admin-order-help">Pembayaran akan berubah setelah status transaksi diterima dari DANA.</p>' : ''}${order.paymentStatus === 'paid' ? `<form class="admin-fulfillment-form" data-update-fulfillment="${escapeHtml(order.id)}"><label>Status pemenuhan<select name="status"><option value="not_started" ${order.fulfillmentStatus === 'not_started' ? 'selected' : ''}>Belum dimulai</option><option value="processing" ${order.fulfillmentStatus === 'processing' ? 'selected' : ''}>Diproses</option><option value="needs_customer_input" ${order.fulfillmentStatus === 'needs_customer_input' ? 'selected' : ''}>Menunggu data pelanggan</option><option value="fulfilled" ${order.fulfillmentStatus === 'fulfilled' ? 'selected' : ''}>Selesai</option></select></label><label>Catatan pemenuhan<input name="note" maxlength="1000" value="${escapeHtml(order.fulfillmentNote || '')}" /></label><button class="button button-small" type="submit">Simpan status</button></form>` : ''}</article>`;
   }
 
   async function renderAdminPage(path) {
@@ -829,7 +852,6 @@
         banners: readCmsRows(form, 'banner'),
         promotions: readCmsRows(form, 'promotion'),
         resellerPlan: { price: Number(fields.get('resellerPlanPrice')), terms: fields.get('resellerPlanTerms') },
-        payment: { qrisImage: form.querySelector('[data-payment-settings] [data-image-target]')?.value || '', instructions: fields.get('paymentInstructions') },
       };
       try {
         STOREFRONT = await requestApi('/api/admin/storefront', { method: 'PUT', body: { storefront } });
@@ -839,14 +861,6 @@
       } catch (error) { message.textContent = error.message; message.classList.add('is-error'); }
     });
 
-    app.querySelectorAll('[data-confirm-payment]').forEach((form) => form.addEventListener('submit', async (event) => {
-      event.preventDefault();
-      const fields = new FormData(form);
-      try {
-        await requestApi(`/api/admin/orders/${encodeURIComponent(form.dataset.confirmPayment)}/confirm-payment`, { method: 'POST', body: { transactionReference: fields.get('transactionReference') } });
-        await render();
-      } catch (error) { showToast(error.message); }
-    }));
     app.querySelectorAll('[data-update-fulfillment]').forEach((form) => form.addEventListener('submit', async (event) => {
       event.preventDefault();
       const fields = new FormData(form);
@@ -1167,6 +1181,49 @@
   }
 
   function bindEvents() {
+    const faqSearch = app.querySelector('[data-faq-search]');
+    const faqTopicButtons = [...app.querySelectorAll('[data-faq-topic]')];
+    const filterFaq = () => {
+      const query = (faqSearch?.value || '').trim().toLocaleLowerCase('id-ID');
+      const topic = app.querySelector('[data-faq-topic].is-active')?.dataset.faqTopic || 'semua';
+      let visible = 0;
+      app.querySelectorAll('[data-faq-item]').forEach((item) => {
+        const show = (topic === 'semua' || item.dataset.topic === topic) && (!query || item.dataset.search.includes(query));
+        item.hidden = !show;
+        if (show) visible++;
+      });
+      const empty = app.querySelector('[data-faq-empty]');
+      if (empty) empty.hidden = visible > 0;
+    };
+    faqSearch?.addEventListener('input', filterFaq);
+    faqTopicButtons.forEach((button) => button.addEventListener('click', () => {
+      faqTopicButtons.forEach((entry) => { const active = entry === button; entry.classList.toggle('is-active', active); entry.setAttribute('aria-pressed', String(active)); });
+      filterFaq();
+    }));
+
+    const resellerChoiceButtons = [...app.querySelectorAll('[data-reseller-choice]')];
+    resellerChoiceButtons.forEach((button) => button.addEventListener('click', () => {
+      const selected = button.dataset.resellerChoice;
+      resellerChoiceButtons.forEach((entry) => { const active = entry === button; entry.classList.toggle('is-active', active); entry.setAttribute('aria-selected', String(active)); });
+      app.querySelectorAll('[data-reseller-panel]').forEach((panel) => { panel.hidden = panel.dataset.resellerPanel !== selected; });
+    }));
+    const bulkProduct = app.querySelector('[data-bulk-product]');
+    const bulkQuantity = app.querySelector('[data-bulk-quantity]');
+    const bulkResult = app.querySelector('[data-bulk-result]');
+    const updateBulkCalculator = () => {
+      if (!bulkProduct || !bulkQuantity || !bulkResult) return;
+      const option = bulkProduct.selectedOptions[0];
+      const minimum = Number(option?.dataset.minimum) || 0;
+      const quantity = Math.max(0, Math.min(99, Number(bulkQuantity.value) || 0));
+      bulkQuantity.min = String(minimum || 1);
+      bulkResult.textContent = quantity >= minimum
+        ? `Jumlah ${quantity} memenuhi minimum ${minimum} unit. Harga reseller terbuka setelah pesanan ini dibayar dan dikonfirmasi DANA.`
+        : `Minimum ${minimum} unit untuk ${option?.textContent || 'produk ini'}. Tambah ${minimum - quantity} unit lagi; akses baru aktif setelah pembayaran dikonfirmasi DANA.`;
+    };
+    bulkProduct?.addEventListener('change', updateBulkCalculator);
+    bulkQuantity?.addEventListener('input', updateBulkCalculator);
+    updateBulkCalculator();
+
     app.querySelectorAll('[data-search-form]').forEach((form) => {
       form.addEventListener('submit', (event) => {
         event.preventDefault();
@@ -1191,6 +1248,7 @@
     });
     app.querySelectorAll('[data-add-to-cart]').forEach((button) => button.addEventListener('click', () => addToCart(button.dataset.addToCart)));
     app.querySelectorAll('[data-quantity]').forEach((button) => button.addEventListener('click', () => updateQuantity(button.dataset.quantity, Number(button.dataset.delta))));
+    app.querySelectorAll('[data-cart-quantity]').forEach((input) => input.addEventListener('change', () => setCartQuantity(input.dataset.cartQuantity, input.value)));
     app.querySelectorAll('[data-remove]').forEach((button) => button.addEventListener('click', () => removeFromCart(button.dataset.remove)));
     const filterDialog = app.querySelector('[data-filter-dialog]');
     app.querySelector('[data-open-filter]')?.addEventListener('click', () => filterDialog?.showModal());
