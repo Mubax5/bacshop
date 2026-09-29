@@ -1,27 +1,23 @@
-# Bacshop — frontend storefront
+# Bacshop storefront
 
-This app is built from scratch in the Tokopedia workspace and does not load Tokopedia production scripts or use the separate Bacshop project. Tokopedia files are the only interface reference.
+Storefront yang dibuat dari awal di workspace Tokopedia yang diunduh. HTML Tokopedia yang disediakan menjadi satu-satunya referensi tampilan; aplikasi ini tidak memakai kode produksi Tokopedia atau proyek Bacshop yang terpisah.
 
-## Open locally
+## Menjalankan aplikasi
 
-Install Node.js, then run `node server.js` from this directory. Open the local URL printed by the server. The server binds to `127.0.0.1`; it serves the sample catalog and stores catalog edits locally.
+Gunakan Node.js lalu jalankan `node server.js` dari folder ini. Server hanya mendengarkan di `127.0.0.1` dan mencetak alamat preview. Saat pertama dijalankan, server menampilkan kode setup admin sekali pakai. Buka `/#/admin`, masukkan kode tersebut, lalu buat email dan kata sandi admin. Kode kedaluwarsa saat server berhenti.
 
-On first startup, the server prints a one-time setup code. Open `/#/admin`, enter that code, and create an admin email and password (at least 12 characters). The code expires when the server stops. Admin credentials and sessions stay on this computer; stop and restart the server to end all sessions. Do not expose the local server to a network.
+Data akun, sesi, pesanan, konten toko, dan audit admin disimpan di `.bacshop-private/`, yang tidak dilayani sebagai aset publik. Produk tersimpan di `data/products.json`; gambar unggahan disimpan di `assets/uploads/` dan divalidasi sebagai gambar sebelum diterima.
 
-## What is included
+## Fitur
 
-- Public storefront with search, categories, product details, retail-only cart, promotions, reseller-program information, help, and FAQ.
-- Customer preview with orders, fulfillment and activation states, input-recovery example, entitlements, support, retail browsing, and reseller-application status.
-- Separate reseller preview with example-only prices, buy-for-customer, orders, customer expiry, and balance/ledger screens.
-- Authenticated admin area for editing every catalog product, including price, product details, search ordering values, pre-order state, and stock confirmation.
-- Responsive manual and automatic homepage carousel. Desktop's first slide carries the storefront message; mobile and remaining slides are empty image placeholders.
-- Advanced category, price range, and sorting filters. Pre-order items link to Telegram and stay out of the cart until stock is confirmed by admin.
-- Mobile storefront uses a sticky search header and full-width, safe-area-aware tab navigation. The site footer is hidden on phones, with support linked from the FAQ page instead.
-- Empty image placeholders for future banner, category, and product photography, with a text-only Bacshop name.
-- Local Plus Jakarta Sans font and selected Feather icons. Font license is in `assets/fonts/OFL.txt`; Feather icons are MIT licensed.
+- Beranda, katalog, detail produk, pencarian, kategori, filter, promo, keranjang, checkout, FAQ, dan navigasi mobile.
+- Login, pendaftaran, profil dan foto profil, pesanan, serta halaman pembayaran.
+- Harga reseller produk terbuka setelah pesanan bulk produk yang sama dibayar, diverifikasi admin, dan tidak direfund. Paket reseller sekali bayar mulai Rp149.000 membuka harga reseller untuk seluruh katalog.
+- Area admin terpisah untuk mengelola produk, kategori, banner, promo, syarat reseller, QRIS, dan pesanan.
+- QRIS statis meminta pembeli memasukkan nominal. Admin mencocokkan transaksi secara manual sebelum menandai pembayaran lunas; unggahan bukti tidak mengonfirmasi pembayaran.
 
-Customer and reseller routes remain sample previews selected from the sign-in screen. Checkout and customer authentication are not connected. Only the admin area has authentication and persistent product editing; no orders, payments, fulfillment, or customer records are processed.
+Konten penjualan tidak mengarang ulasan, jumlah penjualan, atau pesanan. Informasi yang belum dikonfigurasi ditampilkan sebagai belum tersedia, bukan sebagai transaksi nyata.
 
-Admin state is stored in `.bacshop-private/`, outside the server's static file allow-list. Keep that directory private. Product changes are stored in `data/products.json`.
+## Referensi dan aset
 
-The new app is authored independently. The Tokopedia archive and supplied Tokopedia HTML are the only visual/code references. The user-provided Bacshop PRD is used only as a product-behavior brief. Plus Jakarta Sans and Feather are included as explicitly requested design assets.
+Tokopedia hanya menjadi referensi visual dan struktural. Tidak ada skrip atau layanan Tokopedia yang dimuat aplikasi. Aset font Plus Jakarta Sans dan Feather disimpan lokal beserta lisensinya.
