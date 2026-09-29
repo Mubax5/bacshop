@@ -23,9 +23,23 @@ Checkout tetap tertutup sampai server memiliki kredensial DANA. Atur environment
 - `DANA_API_BASE_URL` — alamat API sandbox atau produksi DANA.
 - `DANA_MERCHANT_ID`, `DANA_CLIENT_ID`, `DANA_STORE_ID`, `DANA_CHANNEL_ID`, dan `DANA_ORIGIN`.
 - `DANA_PRIVATE_KEY_FILE` — path ke private key merchant format PEM. Alternatifnya, isi `DANA_PRIVATE_KEY` dengan private key PEM.
-- `DANA_PUBLIC_KEY` — public key DANA untuk memverifikasi callback pembayaran.
+- `DANA_PUBLIC_KEY_FILE` — path file public key DANA untuk memverifikasi callback pembayaran. Alternatifnya, isi `DANA_PUBLIC_KEY` dengan PEM public key.
 
-Daftarkan URL notifikasi HTTPS publik `https://<domain>/api/payments/dana/notify` di konfigurasi integrasi DANA. Callback perlu menjangkau server dari jaringan DANA; localhost hanya cukup untuk uji integrasi lokal. Tanpa kredensial yang sesuai lingkungan, pembuatan QRIS akan gagal tertutup dan tidak membuat pesanan.
+Untuk mencoba integrasi lokal di PowerShell, isi environment sebelum menjalankan server. Ganti nilai contoh dengan kredensial milik merchant; simpan file kunci di luar repo.
+
+```powershell
+$env:DANA_API_BASE_URL = 'https://api.sandbox.dana.id'
+$env:DANA_MERCHANT_ID = '<merchant-id-sandbox>'
+$env:DANA_CLIENT_ID = '<client-id-sandbox>'
+$env:DANA_STORE_ID = '<store-id-terdaftar>'
+$env:DANA_CHANNEL_ID = '<channel-id>'
+$env:DANA_ORIGIN = 'https://<domain-atau-tunnel-https>'
+$env:DANA_PRIVATE_KEY_FILE = 'C:\secure\dana-private-key.pem'
+$env:DANA_PUBLIC_KEY_FILE = 'C:\secure\dana-public-key.pem'
+node server.js
+```
+
+Mulai dengan membuat kredensial di [DANA Sandbox](https://dashboard.dana.id/sandbox/), lalu lakukan uji integrasi QRIS MPM. Untuk menerima pembayaran sungguhan, ikuti proses onboarding merchant DANA, kirim public key merchant dan data toko, selesaikan UAT yang diminta DANA, lalu ganti endpoint dan kredensial ke produksi. Daftarkan notification URL HTTPS publik `https://<domain>/api/payments/dana/notify` pada DANA. DANA harus bisa menjangkau URL itu; `127.0.0.1` hanya dapat dipakai untuk uji lokal tanpa callback eksternal. Tanpa kredensial yang cocok dengan lingkungannya, checkout tetap tertutup dan pesanan tidak dibuat.
 
 Konten penjualan tidak mengarang ulasan, jumlah penjualan, atau pesanan. Informasi yang belum dikonfigurasi ditampilkan sebagai belum tersedia, bukan sebagai transaksi nyata.
 

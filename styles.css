@@ -1230,3 +1230,76 @@ small { font-size: 11px; }
   .bulk-calculator { grid-template-columns: minmax(0,1fr) 92px; gap: 9px; padding: 12px; }
   .reseller-choice-tabs button, .faq-topics button { min-height: 35px; padding-inline: 11px; font-size: 11px; }
 }
+
+/* Shared information layout for help, reseller access, and policy pages. */
+.info-layout { width: min(var(--content), calc(100% - 48px)); display: grid; grid-template-columns: minmax(0,1fr) minmax(230px,280px); align-items: start; gap: 24px; margin: 0 auto; padding: 18px 0 52px; }
+.info-main { min-width: 0; }
+.info-main .page-heading { margin-bottom: 20px; }
+.info-side-rail { width: 100%; max-width: 280px; display: grid; gap: 12px; }
+.rail-card { display: grid; gap: 10px; padding: 18px; background: white; border: 1px solid var(--line); border-radius: 16px; }
+.rail-card-soft { background: #f8f8f9; }
+.rail-eyebrow { color: var(--orange-dark); font-size: 10px; font-weight: 750; letter-spacing: .04em; text-transform: uppercase; }
+.rail-card h2 { margin: 0; font-size: 16px; line-height: 1.35; letter-spacing: -.25px; }
+.rail-card p { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.65; }
+.rail-link, .legal-nav a { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 36px; color: var(--ink); border-top: 1px solid var(--line); font-size: 11px; font-weight: 700; }
+.rail-link .feather-icon { width: 14px; height: 14px; }
+.rail-steps { display: grid; gap: 11px; margin: 0; padding: 0; list-style: none; counter-reset: rail-step; }
+.rail-steps li { position: relative; padding-left: 27px; color: #565d67; font-size: 11px; line-height: 1.5; counter-increment: rail-step; }
+.rail-steps li::before { position: absolute; top: 0; left: 0; width: 18px; height: 18px; display: grid; place-items: center; content: counter(rail-step); color: #a34621; background: #fff0e6; border-radius: 50%; font-size: 10px; font-weight: 750; }
+.info-layout .faq-list { max-width: none; }
+.info-layout .faq-search { max-width: 460px; }
+.info-layout .faq-support { margin-top: 14px; padding: 15px; }
+.info-layout-reseller .info-main { display: grid; gap: 16px; }
+.info-layout-reseller .page-heading { margin-bottom: 0; }
+.info-layout-reseller .reseller-choice-tabs { margin-bottom: 0; }
+.info-layout-reseller .reseller-choice-panel { grid-template-columns: minmax(0,1fr) minmax(190px,250px); gap: 18px; padding: 22px; }
+.info-layout-reseller .reseller-choice-copy h2 { font-size: clamp(19px,2.3vw,25px); }
+.info-layout-reseller .bulk-calculator { grid-template-columns: minmax(0,1fr) 92px; gap: 10px; padding: 13px; }
+.info-layout-reseller .bulk-calculator-result { min-height: 0; }
+.info-layout-reseller .reseller-plan-card { padding: 15px; }
+.legal-nav { display: grid; }
+.legal-nav a { justify-content: flex-start; }
+.content-prose { display: grid; gap: 0; padding: 0 22px; background: #fff; border: 1px solid var(--line); border-radius: 16px; }
+.content-prose section { padding: 19px 0; border-bottom: 1px solid var(--line); }
+.content-prose section:last-child { border-bottom: 0; }
+.content-prose h2 { margin: 0 0 8px; font-size: 14px; }
+.content-prose p { max-width: 74ch; margin: 0; color: #555c66; font-size: 12px; line-height: 1.75; }
+
+/* Account pages keep the brand at the upper left and use the side rail for help. */
+.auth-header { position: relative !important; inset: auto !important; z-index: 2; width: min(1200px,calc(100% - 48px)); min-height: 82px; justify-content: flex-start; margin: 0 auto; padding: 0; }
+.auth-logo { display: inline-flex; align-items: center; min-height: 44px; }
+.auth-main { display: grid; align-items: center; justify-items: center; padding: 18px 24px 64px; }
+.auth-layout { width: min(980px,100%); display: grid; grid-template-columns: minmax(0,1fr) minmax(250px,320px); align-items: center; gap: clamp(24px,5vw,54px); margin: auto; }
+.auth-page { width: 100%; max-width: 500px; }
+.auth-card { padding: clamp(24px,4vw,38px); }
+.auth-kicker { display: block; margin-bottom: 9px; color: var(--orange-dark); font-size: 10px; font-weight: 750; letter-spacing: .05em; text-transform: uppercase; }
+.auth-heading { margin-bottom: 22px; }
+.auth-heading h1 { font-size: clamp(25px,3.4vw,32px); }
+.auth-story { display: grid; gap: 12px; padding: 23px; background: #fff; border: 1px solid var(--line); border-radius: 18px; }
+.auth-story h2 { margin: 0; font-size: 20px; line-height: 1.3; letter-spacing: -.5px; }
+.auth-story > p { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.65; }
+.auth-story ul { display: grid; gap: 10px; margin: 2px 0; padding-left: 18px; color: #535963; font-size: 11px; line-height: 1.55; }
+.auth-story-links { display: grid; gap: 0; margin-top: 2px; border-top: 1px solid var(--line); }
+.auth-story-links a { min-height: 38px; display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--ink); border-bottom: 1px solid var(--line); font-size: 11px; font-weight: 700; }
+.auth-story-links .feather-icon { width: 14px; height: 14px; }
+.auth-legal-links { margin: 17px 0 0; color: var(--muted); font-size: 10px; line-height: 1.7; }
+.auth-legal-links a { color: var(--orange-dark); font-weight: 650; }
+.auth-back-link { margin-top: 16px; }
+
+@media (max-width: 760px) {
+  .info-layout { width: min(100% - 32px,var(--content)); grid-template-columns: minmax(0,1fr); gap: 16px; padding-top: 12px; }
+  .info-side-rail { max-width: none; grid-template-columns: repeat(2,minmax(0,1fr)); }
+  .info-layout-reseller .reseller-choice-panel { grid-template-columns: minmax(0,1fr); }
+  .info-layout-reseller .bulk-calculator { grid-template-columns: minmax(0,1fr) 92px; }
+  .content-prose { padding-inline: 16px; }
+  .auth-header { width: calc(100% - 36px); min-height: 66px; }
+  .auth-main { align-items: start; padding: 10px 18px 44px; }
+  .auth-layout { width: min(520px,100%); grid-template-columns: minmax(0,1fr); gap: 14px; }
+  .auth-story { padding: 18px; }
+}
+@media (max-width: 420px) {
+  .info-side-rail { grid-template-columns: minmax(0,1fr); }
+  .info-layout .faq-support { align-items: flex-start; flex-direction: column; }
+  .info-layout .faq-support .button { width: 100%; }
+  .info-layout-reseller .bulk-calculator { grid-template-columns: minmax(0,1fr) 92px; }
+}

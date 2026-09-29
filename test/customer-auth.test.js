@@ -66,6 +66,8 @@ before(async () => {
   await once(danaServer, 'listening');
   danaBaseUrl = `http://127.0.0.1:${danaServer.address().port}`;
   tempDirectory = await fs.mkdtemp(path.join(os.tmpdir(), 'bacshop-auth-'));
+  const danaPublicKeyFile = path.join(tempDirectory, 'dana-public-key.pem');
+  await fs.writeFile(danaPublicKeyFile, danaPublicKey, 'utf8');
   const productFile = path.join(tempDirectory, 'products.json');
   const uploadDirectory = path.join(tempDirectory, 'uploads');
   await fs.copyFile(path.join(root, 'data', 'products.json'), productFile);
@@ -75,7 +77,7 @@ before(async () => {
   serverProcess = spawn(process.execPath, ['server.js'], {
     cwd: root,
     env: { ...process.env, NODE_ENV: 'test', PORT: String(port), BACSHOP_DATA_DIR: tempDirectory, BACSHOP_PRODUCTS_FILE: productFile, BACSHOP_UPLOADS_DIR: uploadDirectory,
-      DANA_API_BASE_URL: danaBaseUrl, DANA_MERCHANT_ID: 'merchant-test', DANA_CLIENT_ID: 'client-test', DANA_CHANNEL_ID: '95221', DANA_ORIGIN: 'http://localhost.test', DANA_STORE_ID: 'store-test', DANA_PRIVATE_KEY: danaKeys.privateKey, DANA_PUBLIC_KEY: danaKeys.publicKey },
+      DANA_API_BASE_URL: danaBaseUrl, DANA_MERCHANT_ID: 'merchant-test', DANA_CLIENT_ID: 'client-test', DANA_CHANNEL_ID: '95221', DANA_ORIGIN: 'http://localhost.test', DANA_STORE_ID: 'store-test', DANA_PRIVATE_KEY: danaKeys.privateKey, DANA_PUBLIC_KEY_FILE: danaPublicKeyFile },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
 

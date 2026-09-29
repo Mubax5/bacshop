@@ -121,6 +121,10 @@ function danaConfig() {
   if (!privateKey && process.env.DANA_PRIVATE_KEY_FILE) {
     try { privateKey = fs.readFileSync(process.env.DANA_PRIVATE_KEY_FILE, 'utf8'); } catch { return null; }
   }
+  let publicKey = (process.env.DANA_PUBLIC_KEY || '').replace(/\\n/g, '\n');
+  if (!publicKey && process.env.DANA_PUBLIC_KEY_FILE) {
+    try { publicKey = fs.readFileSync(process.env.DANA_PUBLIC_KEY_FILE, 'utf8'); } catch { return null; }
+  }
   const config = {
     baseUrl: (process.env.DANA_API_BASE_URL || '').replace(/\/$/, ''),
     merchantId: process.env.DANA_MERCHANT_ID || '',
@@ -129,7 +133,7 @@ function danaConfig() {
     origin: process.env.DANA_ORIGIN || '',
     storeId: process.env.DANA_STORE_ID || '',
     privateKey,
-    publicKey: (process.env.DANA_PUBLIC_KEY || '').replace(/\\n/g, '\n'),
+    publicKey,
   };
   if (!config.baseUrl || !config.merchantId || !config.clientId || !config.channelId || !config.origin || !config.storeId || !config.privateKey) return null;
   try {
