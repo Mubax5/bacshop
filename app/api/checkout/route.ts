@@ -1,3 +1,5 @@
+import { validBrowserMutation } from "@/application/auth/browser-mutation";
+import { getConfig } from "@/infrastructure/config/env";
 import { randomUUID } from "node:crypto";
 import { NextResponse } from "next/server";
 import { getCustomerSession } from "@/application/auth/require-customer";
@@ -11,22 +13,24 @@ import { DevelopmentPaymentProvider } from "@/infrastructure/payments/payment-pr
 
 export async function POST(request: Request) {
   const session = await getCustomerSession();
-  if (!session) return NextResponse.redirect(new URL(`/auth/sign-in?returnTo=${encodeURIComponent("/checkout")}`, request.url), 303);
+  if (!session) return NextResponse.redirect(new URL(`/auth/sign-in?returnTo=${encodeURIComponent("/checkout")}`, getConfig().appOrigin), 303);
   const form = await request.formData();
+  if (!(await validBrowserMutation(request, form))) return new Response("Permintaan tidak valid. Muat ulang halaman dan coba lagi.", { status: 403 });
+  if (getConfig().runtime === "database") return new Response("Pembayaran belum tersedia pada runtime migrasi ini.", { status: 503 });
   const rawClientTotal = String(form.get("clientTotal") ?? "");
   let details;
   try {
     details = validateCheckoutDetails({ recipientEmail: String(form.get("recipientEmail") ?? ""), paymentMethod: String(form.get("paymentMethod") ?? "") as "bank_transfer" | "qris", termsAccepted: form.get("termsAccepted") === "on" });
   } catch {
-    return NextResponse.redirect(new URL("/checkout?error=invalid", request.url), 303);
+    return NextResponse.redirect(new URL("/checkout?error=invalid", getConfig().appOrigin), 303);
   }
   const clientTotal = /^(0|[1-9]\d*)$/.test(rawClientTotal) ? Number(rawClientTotal) : Number.NaN;
   const sessionId = request.headers.get("cookie")?.match(/(?:^|;\s*)bacshop-cart-session=([a-zA-Z0-9-]+)/)?.[1];
-  if (!sessionId) return NextResponse.redirect(new URL("/cart", request.url), 303);
+  if (!sessionId) return NextResponse.redirect(new URL("/cart", getConfig().appOrigin), 303);
   const cart = await reconcileRetailCart(developmentSessionCart, sessionId);
   const checkout = await prepareRetailCheckout({ lines: cart.lines, clientTotal, catalog: developmentCatalogRepository });
-  if (checkout.status === "invalid-input") return NextResponse.redirect(new URL("/checkout?error=invalid", request.url), 303);
-  if (checkout.status === "reconciliation-required") return NextResponse.redirect(new URL("/checkout?state=reconciled", request.url), 303);
+  if (checkout.status === "invalid-input") return NextResponse.redirect(new URL("/checkout?error=invalid", getConfig().appOrigin), 303);
+  if (checkout.status === "reconciliation-required") return NextResponse.redirect(new URL("/checkout?state=reconciled", getConfig().appOrigin), 303);
 
   const id = randomUUID();
   const order = {
@@ -47,5 +51,5 @@ export async function POST(request: Request) {
   await developmentNotifications.saveIfMissing(`order:${id}:payment-pending`, { userId: session.userId, orderId: id, kind: "payment", title: "Bet lanjut pembayaran", body: `Pesanan ${id.slice(0, 8).toUpperCase()} menunggu pembayaran.`, createdAt: order.createdAt });
   const payment = await new DevelopmentPaymentProvider().createPaymentIntent({ orderReference: id, amount: checkout.subtotal, currency: "IDR", idempotencyKey: id });
   await developmentSessionCart.clear(sessionId);
-  return NextResponse.redirect(new URL(payment.redirectUrl, request.url), 303);
+  return NextResponse.redirect(new URL(payment.redirectUrl, getConfig().appOrigin), 303);
 }

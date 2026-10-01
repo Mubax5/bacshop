@@ -26,6 +26,9 @@ describe("application environment", () => {
     expect(config.runtime).toBe("development");
     expect(config.database.url).toBeUndefined();
     expect(config.media.storage).toBe("local");
+    expect(config.auth.adminSessionTtlSeconds).toBe(8 * 60 * 60);
+    expect(config.auth.adminReauthTtlSeconds).toBe(300);
+    expect(config.trustProxy).toBe(false);
   });
 
   it("requires production database runtime and deployment boundaries", () => {
@@ -44,6 +47,14 @@ describe("application environment", () => {
     expect(config.runtime).toBe("database");
     expect(config.isProduction).toBe(true);
     expect(config.trustedOrigins).toEqual(["https://shop.example.com"]);
+    expect(config.auth.adminSessionTtlSeconds).toBe(8 * 60 * 60);
+    expect(config.auth.adminReauthTtlSeconds).toBe(300);
+  });
+
+  it("requires authentication secrets for an explicitly configured database runtime in development", () => {
+    expect(() => loadConfig({ NODE_ENV: "development", BACSHOP_RUNTIME: "database", DATABASE_URL: "postgresql://app:password@db.example.com:5432/bacshop" })).toThrow(ConfigurationError);
+    const configured = loadConfig({ NODE_ENV: "development", BACSHOP_RUNTIME: "database", DATABASE_URL: "postgresql://app:password@db.example.com:5432/bacshop", SESSION_SECRET: "0123456789abcdef".repeat(4), MFA_ENCRYPTION_KEY: "abcdef0123456789".repeat(4) });
+    expect(configured.runtime).toBe("database");
   });
 
   it("rejects localhost origins in production", () => {

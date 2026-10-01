@@ -1,0 +1,8 @@
+import { NextResponse } from "next/server";
+import { getConfig } from "@/infrastructure/config/env";
+import { validateCsrfRequest } from "@/infrastructure/security/csrf";
+import { getIdentityService, usesDatabaseIdentity } from "@/application/auth/identity";
+import { csrfSecret } from "@/application/auth/csrf";
+import { createEmailDelivery } from "@/infrastructure/email/email-delivery";
+import { consumeAuthRateLimit } from "@/application/auth/rate-limit";
+export async function POST(request: Request) { const form = await request.formData(); const config = getConfig(); const email = String(form.get("email") ?? ""); if (!(await validateCsrfRequest(request, String(form.get("csrf") ?? ""), { trustedOrigins: config.trustedOrigins, secret: csrfSecret(), isProduction: config.isProduction }))) return new NextResponse("Invalid request", { status: 403 }); const rate = await consumeAuthRateLimit(request, "forgot-password", email); if (rate && !rate.allowed) return new NextResponse("Too many attempts", { status: 429, headers: { "Retry-After": String(rate.retryAfterSeconds) } }); if (usesDatabaseIdentity()) { if (!config.email.enabled || !config.email.smtp) return NextResponse.redirect(new URL("/auth/forgot-password?error=email-unavailable", config.appOrigin), 303); const reset = await getIdentityService().requestPasswordReset(email); if (reset) { try { await createEmailDelivery(config).sendPasswordReset(reset.email, reset.token); } catch { return NextResponse.redirect(new URL("/auth/forgot-password?error=email-unavailable", config.appOrigin), 303); } } } return NextResponse.redirect(new URL("/auth/forgot-password?sent=1", config.appOrigin), 303); }

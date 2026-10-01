@@ -73,7 +73,13 @@ npm run build
 
 Set `BACSHOP_INTEGRATION_DATABASE_URL` only for the disposable integration database whose name ends in `_integration`. Never point that variable at a live database. The recorded foundation result is 16 integration cases, 67 unit tests, lint with 0 errors and 5 legacy warnings, a passing typecheck, and a production build pass with 41 generated pages. `npm audit --omit=dev` reports 0 vulnerabilities; `prisma validate` and `prisma migrate status` are green against the candidate database.
 
-## Database and recovery
+## Candidate account and admin security
+
+Database runtime now has durable registration, sign-in, profile, password recovery/verification, session revocation, mandatory admin MFA and five server roles. See [Phase 2 identity evidence and setup](docs/production/phase-2-identity.md) for bootstrap, cookies, SMTP, recovery, proxy configuration and acceptance limits. `npm run admin:bootstrap` uses private `ADMIN_BOOTSTRAP_*` environment values and refuses to reset an existing administrator. `npm run test:e2e` runs candidate browser tests against an isolated integration database, never the live 4173 data directory.
+
+Apply all three forward migrations before starting the current candidate. Successful authentication does not imply that later operational/payment migrations are complete. The approved legacy storefront remains the live reference until visual and functional parity is accepted.
+
+### Database foundation and recovery
 
 Phase 1 contains two forward migrations: `20261001000000_init` creates the normalized commerce schema and core integrity guards; `20261001010000_integrity_guards` adds reseller tenant constraints, immutable order snapshots, stricter append-only protection, and wallet balance enforcement.
 

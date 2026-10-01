@@ -4,6 +4,8 @@ import "./globals.css";
 import { PublicShell } from "@/ui/shells/public-shell";
 import { getPlatformSession } from "@/application/auth/require-customer";
 import { getResellerIdentity } from "@/application/reseller/require-reseller";
+import { csrfFormToken } from "@/application/auth/csrf";
+import { CsrfProvider } from "@/ui/security/csrf-input";
 
 export const metadata: Metadata = {
   title: { default: "Bacshop — Produk digital, lebih jelas", template: "%s | Bacshop" },
@@ -16,7 +18,7 @@ export default async function RootLayout({ children }: Readonly<{ children: Reac
   const state = session?.role === "admin" ? "admin" : session || resellerApproved ? "customer" : "guest";
   return (
     <html lang="id">
-      <body><PublicShell state={state} resellerApproved={resellerApproved}>{children}</PublicShell></body>
+      <body><CsrfProvider token={await csrfFormToken()}><PublicShell state={state} resellerApproved={resellerApproved}>{children}</PublicShell></CsrfProvider></body>
     </html>
   );
 }

@@ -39,6 +39,9 @@ export const environmentSchema = z
     MFA_ENCRYPTION_KEY: optionalNonEmpty,
     ENCRYPTION_KEY: optionalNonEmpty,
     SESSION_TTL_SECONDS: optionalPositiveInteger,
+    ADMIN_SESSION_TTL_SECONDS: optionalPositiveInteger,
+    ADMIN_REAUTH_TTL_SECONDS: optionalPositiveInteger,
+    TRUST_PROXY: optionalBooleanFromEnv,
 
     EMAIL_ENABLED: optionalBooleanFromEnv,
     EMAIL_REQUIRED: optionalBooleanFromEnv,
@@ -102,6 +105,8 @@ export interface AppConfig {
     sessionSecret?: string;
     mfaEncryptionKey?: string;
     sessionTtlSeconds: number;
+    adminSessionTtlSeconds: number;
+    adminReauthTtlSeconds: number;
   };
   email: {
     enabled: boolean;
@@ -156,6 +161,7 @@ export interface AppConfig {
     provider: "memory" | "database" | "redis";
     redisUrl?: string;
   };
+  trustProxy: boolean;
   port: number;
 }
 
@@ -289,14 +295,15 @@ export function loadConfig(input: NodeJS.ProcessEnv | Record<string, string | un
   if (!trustedOrigins.includes(appOrigin)) addIssue(issues, "TRUSTED_ORIGINS", "must include APP_ORIGIN");
 
   const mfaKey = raw.MFA_ENCRYPTION_KEY ?? raw.ENCRYPTION_KEY;
-  if (isProduction && !isSecretAtLeast32Bytes(raw.SESSION_SECRET)) addIssue(issues, "SESSION_SECRET", "must be at least 32 random bytes encoded as hex or base64");
-  if (isProduction && !isSecretExactly32Bytes(mfaKey)) addIssue(issues, "MFA_ENCRYPTION_KEY", "must be exactly 32 random bytes encoded as hex or base64");
+  if ((runtime === "database" || isProduction) && !isSecretAtLeast32Bytes(raw.SESSION_SECRET)) addIssue(issues, "SESSION_SECRET", "must be at least 32 random bytes encoded as hex or base64");
+  if ((runtime === "database" || isProduction) && !isSecretExactly32Bytes(mfaKey)) addIssue(issues, "MFA_ENCRYPTION_KEY", "must be exactly 32 random bytes encoded as hex or base64");
 
   const emailEnabled = raw.EMAIL_ENABLED ?? false;
   const emailRequired = raw.EMAIL_REQUIRED ?? false;
   if (emailRequired && !emailEnabled) addIssue(issues, "EMAIL_ENABLED", "must be true when email is required");
   if (emailEnabled && isPlaceholder(raw.SMTP_HOST)) addIssue(issues, "SMTP_HOST", "is required when email is enabled");
   if (emailEnabled && isPlaceholder(raw.SMTP_FROM)) addIssue(issues, "SMTP_FROM", "is required when email is enabled");
+  if (emailEnabled && Boolean(raw.SMTP_USER) !== Boolean(raw.SMTP_PASSWORD)) addIssue(issues, "SMTP_USER", "SMTP user and password must be configured together");
 
   const mediaStorage = raw.MEDIA_STORAGE ?? (isProduction ? "object" : "local");
   if (isProduction && mediaStorage !== "object") addIssue(issues, "MEDIA_STORAGE", "production requires object media storage");
@@ -351,6 +358,8 @@ export function loadConfig(input: NodeJS.ProcessEnv | Record<string, string | un
       sessionSecret: raw.SESSION_SECRET,
       mfaEncryptionKey: mfaKey,
       sessionTtlSeconds: raw.SESSION_TTL_SECONDS ?? 60 * 60 * 24 * 30,
+      adminSessionTtlSeconds: raw.ADMIN_SESSION_TTL_SECONDS ?? 60 * 60 * 8,
+      adminReauthTtlSeconds: raw.ADMIN_REAUTH_TTL_SECONDS ?? 60 * 5,
     },
     email: {
       enabled: emailEnabled,
@@ -410,6 +419,7 @@ export function loadConfig(input: NodeJS.ProcessEnv | Record<string, string | un
       endpoint: raw.ANALYTICS_ENDPOINT,
     },
     rateLimit: { provider: rateLimitProvider, redisUrl: raw.REDIS_URL },
+    trustProxy: raw.TRUST_PROXY ?? false,
     port: raw.PORT ?? 3000,
   };
 }

@@ -1,14 +1,17 @@
 import type { FulfillmentStatus, PaymentStatus, OrderStatus } from "@/domain/retail/types";
 
-export type AdminRole = "super-admin" | "operations" | "finance" | "content";
+export type AdminRole = "super-admin" | "operations" | "finance" | "content" | "customer-support";
 
 export interface AdminSession {
   userId: string;
   role: "admin";
   adminRole: AdminRole;
+  /** Current active assignments, supplied by the persistent identity service. */
+  adminRoles?: readonly AdminRole[];
   email: string;
   displayName: string;
   mfaVerified: true;
+  reauthExpiresAt?: string;
 }
 
 export type AdminPermission =
@@ -43,4 +46,5 @@ export const ADMIN_ROLE_PERMISSIONS: Record<AdminRole, readonly AdminPermission[
   operations: ["catalog:read", "orders:read", "orders:write", "resellers:read", "support:read", "support:write", "audit:read"],
   finance: ["pricing:read", "pricing:write", "orders:read", "balance:read", "balance:write", "audit:read"],
   content: ["catalog:read", "catalog:write", "promotions:read", "promotions:write", "support:read", "audit:read"],
+  "customer-support": ["orders:read", "resellers:read", "support:read", "support:write", "audit:read"],
 };

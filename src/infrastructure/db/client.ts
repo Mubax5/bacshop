@@ -36,7 +36,7 @@ export async function checkDatabaseReadiness(): Promise<boolean> {
     const migrations = await getDatabase().$queryRaw<{ ready: boolean }[]>`
       SELECT EXISTS (
         SELECT 1 FROM "_prisma_migrations"
-        WHERE migration_name = '20261001010000_integrity_guards'
+        WHERE migration_name = '20261001020000_identity_security'
           AND finished_at IS NOT NULL AND rolled_back_at IS NULL
       ) AS ready`;
     return migrations[0]?.ready === true;

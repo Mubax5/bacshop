@@ -8,6 +8,7 @@ coverage/
 .superpowers/
 playwright-report/
 test-results/
+.test-results/
 *.tsbuildinfo
 .bacshop-private/
 assets/uploads/

@@ -48,6 +48,11 @@ enum CommercialContext {
   RESELLER
 }
 
+enum SessionKind {
+  CUSTOMER
+  ADMIN
+}
+
 enum PriceKind {
   RETAIL
   RESELLER
@@ -276,6 +281,7 @@ model User {
   emailVerificationTokens EmailVerificationToken[]
   passwordResetTokens     PasswordResetToken[]
   adminRoleAssignments    AdminRoleAssignment[]
+  grantedAdminRoleAssignments AdminRoleAssignment[] @relation("AdminRoleGrantActor")
   mfaFactors              MfaFactor[]
   mfaRecoveryCodes        MfaRecoveryCode[]
   resellerProfile         ResellerProfile?
@@ -316,20 +322,26 @@ model AuthIdentity {
 }
 
 model Session {
-  id         String            @id @default(uuid()) @db.Uuid
-  userId     String            @db.Uuid
-  tokenHash  String            @unique @db.VarChar(255)
-  context    CommercialContext @default(RETAIL)
-  ipAddress  String?           @db.VarChar(64)
-  userAgent  String?           @db.VarChar(512)
-  expiresAt  DateTime          @db.Timestamptz(6)
-  revokedAt  DateTime?         @db.Timestamptz(6)
-  createdAt  DateTime          @default(now()) @db.Timestamptz(6)
-  lastSeenAt DateTime          @default(now()) @db.Timestamptz(6)
-  user       User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id                String            @id @default(uuid()) @db.Uuid
+  userId            String            @db.Uuid
+  tokenHash         String            @unique @db.VarChar(255)
+  kind              SessionKind       @default(CUSTOMER)
+  context           CommercialContext @default(RETAIL)
+  ipAddress         String?           @db.VarChar(64)
+  userAgent         String?           @db.VarChar(512)
+  expiresAt         DateTime          @db.Timestamptz(6)
+  revokedAt         DateTime?         @db.Timestamptz(6)
+  revokedReason     String?           @db.VarChar(160)
+  mfaVerifiedAt     DateTime?         @db.Timestamptz(6)
+  reauthenticatedAt DateTime?         @db.Timestamptz(6)
+  reauthExpiresAt   DateTime?         @db.Timestamptz(6)
+  createdAt         DateTime          @default(now()) @db.Timestamptz(6)
+  lastSeenAt        DateTime          @default(now()) @db.Timestamptz(6)
+  user              User              @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId, revokedAt, expiresAt])
   @@index([expiresAt])
+  @@index([kind, revokedAt, expiresAt], map: "sessions_kind_revoked_expires_idx")
   @@map("sessions")
 }
 
@@ -367,6 +379,7 @@ model AdminRoleAssignment {
   createdAt   DateTime  @default(now()) @db.Timestamptz(6)
   revokedAt   DateTime? @db.Timestamptz(6)
   user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  grantedBy   User?     @relation("AdminRoleGrantActor", fields: [grantedById], references: [id], onDelete: SetNull)
 
   @@index([userId, role, revokedAt])
   @@map("admin_role_assignments")
@@ -380,6 +393,7 @@ model MfaFactor {
   label            String?           @db.VarChar(160)
   verifiedAt       DateTime?         @db.Timestamptz(6)
   lastUsedAt       DateTime?         @db.Timestamptz(6)
+  lastUsedCounter  BigInt?
   createdAt        DateTime          @default(now()) @db.Timestamptz(6)
   disabledAt       DateTime?         @db.Timestamptz(6)
   user             User              @relation(fields: [userId], references: [id], onDelete: Cascade)
