@@ -12,34 +12,41 @@ Data akun, sesi, pesanan, konten toko, dan audit admin disimpan di `.bacshop-pri
 
 - Beranda, katalog, detail produk, pencarian, kategori, filter, promo, keranjang, checkout, FAQ, dan navigasi mobile.
 - Login, pendaftaran, profil dan foto profil, pesanan, serta halaman pembayaran.
-- Harga reseller produk terbuka setelah pesanan bulk produk yang sama dibayar melalui DANA dan tidak direfund. Paket reseller sekali bayar mulai Rp149.000 membuka harga reseller untuk seluruh katalog.
+- Harga reseller produk terbuka setelah pesanan bulk produk yang sama dibayar dan tidak direfund. Paket reseller sekali bayar mulai Rp149.000 membuka harga reseller untuk seluruh katalog.
 - Area admin terpisah untuk mengelola produk, kategori, banner placeholder, promo, syarat reseller, dan pemenuhan pesanan.
-- QRIS dibuat dari DANA untuk setiap transaksi dan nominal. QR yang dibuat dari API ditampilkan sebagai gambar DANA atau dirender dari `qrContent`; pembayaran hanya terkonfirmasi lewat callback bertanda tangan atau pemeriksaan status API DANA. Konfirmasi manual dan QR statis tidak dipakai.
+- QRIS dinamis dibuat untuk setiap transaksi melalui Core API. Hanya gambar QRIS yang tampil di halaman pembayaran; integrasi tidak memakai halaman checkout atau widget pihak pemroses. Status pembayaran diperiksa melalui callback bertanda tangan atau pemeriksaan status server. Konfirmasi manual dan QR statis tidak dipakai.
 
-### Kredensial DANA
+### Kredensial pembayaran
 
-Checkout tetap tertutup sampai server memiliki kredensial DANA. Atur environment berikut di host server, jangan di frontend atau repo:
+Checkout tetap tertutup sampai server memiliki Server Key. Salin `.env.example` menjadi `.env`, lalu isi file `.env` di folder aplikasi. Server membaca file itu saat mulai; environment yang sudah diatur pada host tetap memiliki prioritas. File `.env` diabaikan Git dan jangan dibagikan atau di-commit.
 
-- `DANA_API_BASE_URL` — alamat API sandbox atau produksi DANA.
-- `DANA_MERCHANT_ID`, `DANA_CLIENT_ID`, `DANA_STORE_ID`, `DANA_CHANNEL_ID`, dan `DANA_ORIGIN`.
-- `DANA_PRIVATE_KEY_FILE` — path ke private key merchant format PEM. Alternatifnya, isi `DANA_PRIVATE_KEY` dengan private key PEM.
-- `DANA_PUBLIC_KEY_FILE` — path file public key DANA untuk memverifikasi callback pembayaran. Alternatifnya, isi `DANA_PUBLIC_KEY` dengan PEM public key.
+- `MIDTRANS_SERVER_KEY` — Server Key yang aktif untuk sandbox atau production.
+- `MIDTRANS_MERCHANT_ID` — opsional, untuk mencocokkan identitas merchant pada respons pembayaran.
+- `MIDTRANS_IS_PRODUCTION` — set `true` untuk production; tanpa ini server memakai sandbox.
 
-Untuk mencoba integrasi lokal di PowerShell, isi environment sebelum menjalankan server. Ganti nilai contoh dengan kredensial milik merchant; simpan file kunci di luar repo.
+Untuk sandbox, isi `.env` seperti ini lalu mulai ulang server:
+
+```dotenv
+MIDTRANS_SERVER_KEY=<server-key-sandbox>
+MIDTRANS_MERCHANT_ID=<merchant-id>
+MIDTRANS_IS_PRODUCTION=false
+```
+
+Untuk production, gunakan Server Key production dan ubah `MIDTRANS_IS_PRODUCTION=true`:
+
+```dotenv
+MIDTRANS_SERVER_KEY=<server-key-production>
+MIDTRANS_MERCHANT_ID=<merchant-id>
+MIDTRANS_IS_PRODUCTION=true
+```
+
+Kemudian jalankan:
 
 ```powershell
-$env:DANA_API_BASE_URL = 'https://api.sandbox.dana.id'
-$env:DANA_MERCHANT_ID = '<merchant-id-sandbox>'
-$env:DANA_CLIENT_ID = '<client-id-sandbox>'
-$env:DANA_STORE_ID = '<store-id-terdaftar>'
-$env:DANA_CHANNEL_ID = '<channel-id>'
-$env:DANA_ORIGIN = 'https://<domain-atau-tunnel-https>'
-$env:DANA_PRIVATE_KEY_FILE = 'C:\secure\dana-private-key.pem'
-$env:DANA_PUBLIC_KEY_FILE = 'C:\secure\dana-public-key.pem'
 node server.js
 ```
 
-Mulai dengan membuat kredensial di [DANA Sandbox](https://dashboard.dana.id/sandbox/), lalu lakukan uji integrasi QRIS MPM. Untuk menerima pembayaran sungguhan, ikuti proses onboarding merchant DANA, kirim public key merchant dan data toko, selesaikan UAT yang diminta DANA, lalu ganti endpoint dan kredensial ke produksi. Daftarkan notification URL HTTPS publik `https://<domain>/api/payments/dana/notify` pada DANA. DANA harus bisa menjangkau URL itu; `127.0.0.1` hanya dapat dipakai untuk uji lokal tanpa callback eksternal. Tanpa kredensial yang cocok dengan lingkungannya, checkout tetap tertutup dan pesanan tidak dibuat.
+Daftarkan callback HTTPS publik `https://<domain>/api/payments/notify` pada dashboard akun pembayaran agar status pesanan diperbarui otomatis. Callback lokal `127.0.0.1` tidak dapat dijangkau dari internet; tombol periksa pembayaran tetap menggunakan status API server. Untuk production, gunakan Server Key production dan set `MIDTRANS_IS_PRODUCTION=true`. Client Key tidak diperlukan karena pembayaran memakai Core API dari server dan tidak memuat Snap.js.
 
 Konten penjualan tidak mengarang ulasan, jumlah penjualan, atau pesanan. Informasi yang belum dikonfigurasi ditampilkan sebagai belum tersedia, bukan sebagai transaksi nyata.
 

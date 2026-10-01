@@ -1,12 +1,16 @@
 [
   {
-    "id": "ai-studio-plus",
-    "slug": "ai-studio-plus",
     "name": "AI Studio Plus",
+    "slug": "ai-studio-plus",
     "category": "ai",
-    "price": 89000,
+    "price": 89001,
+    "resellerPrice": 35001,
+    "bulkMinimum": 5,
+    "stock": 1,
     "duration": "1 bulan",
     "fulfillment": "Aktivasi digital",
+    "createdAt": "2026-09-28",
+    "orderMode": "preorder",
     "description": "Akses paket produktivitas AI untuk membantu riset, menulis, dan merangkum pekerjaan.",
     "terms": {
       "Durasi": "1 bulan sejak aktivasi",
@@ -15,9 +19,12 @@
       "Aktivasi": "Panduan dikirim setelah pesanan diproses",
       "Garansi & bantuan": "Lihat detail kebijakan sebelum transaksi"
     },
-    "createdAt": "2026-09-28",
-    "orderMode": "ready",
-    "preOrderConfirmed": true
+    "preOrderConfirmed": true,
+    "id": "ai-studio-plus",
+    "sold": 0,
+    "rating": 0,
+    "image": "",
+    "archived": false
   },
   {
     "id": "stream-screen",

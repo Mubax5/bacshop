@@ -6,6 +6,28 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const QRCode = require('qrcode');
 
+function loadEnvFile(file = path.join(__dirname, '.env')) {
+  let contents;
+  try { contents = fs.readFileSync(file, 'utf8'); } catch { return; }
+  for (const line of contents.split(/\r?\n/)) {
+    const entry = line.trim();
+    if (!entry || entry.startsWith('#')) continue;
+    const match = entry.match(/^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/);
+    if (!match || process.env[match[1]] !== undefined && process.env[match[1]] !== '') continue;
+    let value = match[2].trim();
+    if (value.startsWith('"') && value.endsWith('"')) {
+      try { value = JSON.parse(value); } catch { value = value.slice(1, -1); }
+    } else if (value.startsWith("'") && value.endsWith("'")) {
+      value = value.slice(1, -1);
+    } else {
+      value = value.replace(/\s+#.*$/, '').trim();
+    }
+    process.env[match[1]] = value;
+  }
+}
+
+loadEnvFile();
+
 const ROOT = __dirname;
 const PORT = Number(process.env.PORT || 4173);
 const HOST = '127.0.0.1';
@@ -21,9 +43,7 @@ const SESSION_MS = 8 * 60 * 60 * 1000;
 const COOKIE = 'BacshopAdmin';
 const USER_COOKIE = 'BacshopUser';
 const CATEGORIES = new Set(['ai', 'streaming', 'desain', 'musik', 'office', 'editing', 'voucher']);
-const DANA_QRIS_GENERATE_PATH = '/v1.0/qr/qr-mpm-generate.htm';
-const DANA_QRIS_STATUS_PATH = '/rest/v1.1/debit/status';
-const DANA_QRIS_NOTIFY_PATH = '/api/payments/dana/notify';
+const MIDTRANS_NOTIFY_PATH = '/api/payments/notify';
 const MIME = {
   '.css': 'text/css; charset=utf-8', '.html': 'text/html; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8', '.json': 'application/json; charset=utf-8',
@@ -87,7 +107,7 @@ function defaultStorefront() {
     ],
     promotions: [],
     resellerPlan: { price: 149000, terms: 'Akses harga reseller berlaku permanen untuk seluruh produk setelah pembayaran diverifikasi.' },
-    payment: { provider: 'DANA QRIS dinamis' },
+    payment: { provider: 'QRIS' },
   };
 }
 
@@ -95,8 +115,8 @@ function readStorefront() {
   const stored = readJson(CMS_FILE, null);
   const defaults = defaultStorefront();
   return stored && typeof stored === 'object'
-    ? { ...defaults, ...stored, payment: { ...defaults.payment, available: Boolean(danaConfig()) } }
-    : { ...defaults, payment: { ...defaults.payment, available: Boolean(danaConfig()) } };
+    ? { ...defaults, ...stored, payment: { ...defaults.payment, available: Boolean(midtransConfig()) } }
+    : { ...defaults, payment: { ...defaults.payment, available: Boolean(midtransConfig()) } };
 }
 
 function saveAudit(entry) {
@@ -115,108 +135,96 @@ function json(res, status, body, extraHeaders = {}) {
   res.end(JSON.stringify(body));
 }
 
-function danaConfig() {
-  const inlineKey = process.env.DANA_PRIVATE_KEY || '';
-  let privateKey = inlineKey.replace(/\\n/g, '\n');
-  if (!privateKey && process.env.DANA_PRIVATE_KEY_FILE) {
-    try { privateKey = fs.readFileSync(process.env.DANA_PRIVATE_KEY_FILE, 'utf8'); } catch { return null; }
-  }
-  let publicKey = (process.env.DANA_PUBLIC_KEY || '').replace(/\\n/g, '\n');
-  if (!publicKey && process.env.DANA_PUBLIC_KEY_FILE) {
-    try { publicKey = fs.readFileSync(process.env.DANA_PUBLIC_KEY_FILE, 'utf8'); } catch { return null; }
-  }
+function midtransConfig() {
+  const production = process.env.MIDTRANS_IS_PRODUCTION === 'true';
+  const testBaseUrl = process.env.NODE_ENV === 'test' ? process.env.MIDTRANS_API_BASE_URL : '';
   const config = {
-    baseUrl: (process.env.DANA_API_BASE_URL || '').replace(/\/$/, ''),
-    merchantId: process.env.DANA_MERCHANT_ID || '',
-    clientId: process.env.DANA_CLIENT_ID || '',
-    channelId: process.env.DANA_CHANNEL_ID || '',
-    origin: process.env.DANA_ORIGIN || '',
-    storeId: process.env.DANA_STORE_ID || '',
-    privateKey,
-    publicKey,
+    baseUrl: (testBaseUrl || (production ? 'https://api.midtrans.com' : 'https://api.sandbox.midtrans.com')).replace(/\/$/, ''),
+    serverKey: (process.env.MIDTRANS_SERVER_KEY || '').trim(),
+    merchantId: (process.env.MIDTRANS_MERCHANT_ID || '').trim(),
   };
-  if (!config.baseUrl || !config.merchantId || !config.clientId || !config.channelId || !config.origin || !config.storeId || !config.privateKey) return null;
+  if (!config.serverKey) return null;
+  if (!testBaseUrl) {
+    const sandboxKey = config.serverKey.startsWith('SB-Mid-server-');
+    const productionKey = config.serverKey.startsWith('Mid-server-') && !sandboxKey;
+    if (production ? !productionKey : !sandboxKey) return null;
+  }
   try {
     const endpoint = new URL(config.baseUrl);
-    if (endpoint.protocol !== 'https:' && process.env.NODE_ENV !== 'test' && !['localhost', '127.0.0.1'].includes(endpoint.hostname)) return null;
-    crypto.createPrivateKey(config.privateKey);
+    if (endpoint.protocol !== 'https:' && !(process.env.NODE_ENV === 'test' && ['localhost', '127.0.0.1'].includes(endpoint.hostname))) return null;
   } catch { return null; }
   return config;
 }
 
-function danaTimestamp(date = new Date()) {
-  const jakarta = new Date(date.getTime() + 7 * 60 * 60 * 1000).toISOString().slice(0, 19);
-  return `${jakarta}+07:00`;
+function midtransAuthorization(config) {
+  return `Basic ${Buffer.from(`${config.serverKey}:`).toString('base64')}`;
 }
 
-function danaSignature(method, pathname, rawBody, timestamp, privateKey) {
-  const digest = crypto.createHash('sha256').update(rawBody).digest('hex');
-  const stringToSign = `${method.toUpperCase()}:${pathname}:${digest}:${timestamp}`;
-  return crypto.sign('RSA-SHA256', Buffer.from(stringToSign), privateKey).toString('base64');
-}
+const MIDTRANS_HTTP_STATUS = Symbol('midtransHttpStatus');
 
-function verifyDanaSignature(req, body, publicKey) {
-  const timestamp = req.headers['x-timestamp'];
-  const signature = req.headers['x-signature'];
-  const parsedTimestamp = Date.parse(timestamp || '');
-  if (!timestamp || !signature || !Number.isFinite(parsedTimestamp) || Math.abs(Date.now() - parsedTimestamp) > 5 * 60 * 1000) return false;
-  try {
-    const rawBody = JSON.stringify(body);
-    const digest = crypto.createHash('sha256').update(rawBody).digest('hex');
-    const stringToVerify = `${req.method.toUpperCase()}:${new URL(req.url, `http://${HOST}:${PORT}`).pathname}:${digest}:${timestamp}`;
-    return crypto.verify('RSA-SHA256', Buffer.from(stringToVerify), publicKey, Buffer.from(signature, 'base64'));
-  } catch { return false; }
-}
-
-async function danaRequest(pathname, body, config = danaConfig()) {
-  if (!config) throw Object.assign(new Error('Pembayaran QRIS dinamis belum dikonfigurasi. Admin perlu menyiapkan kredensial API DANA di server.'), { status: 503 });
-  const timestamp = danaTimestamp();
-  const rawBody = JSON.stringify(body);
-  const externalId = `${Date.now()}${crypto.randomInt(100000, 999999)}`.slice(0, 36);
+async function midtransRequest(method, pathname, body, config = midtransConfig()) {
+  if (!config) throw Object.assign(new Error('Pembayaran QRIS dinamis belum dikonfigurasi. Admin perlu mengatur Server Key di environment server.'), { status: 503 });
   const response = await fetch(`${config.baseUrl}${pathname}`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json', Accept: 'application/json',
-      'X-TIMESTAMP': timestamp,
-      'X-SIGNATURE': danaSignature('POST', pathname, rawBody, timestamp, config.privateKey),
-      'ORIGIN': config.origin,
-      'X-PARTNER-ID': config.clientId,
-      'X-EXTERNAL-ID': externalId,
-      'CHANNEL-ID': config.channelId,
-    },
-    body: rawBody,
+    method,
+    headers: { Accept: 'application/json', Authorization: midtransAuthorization(config), ...(body ? { 'Content-Type': 'application/json' } : {}) },
+    ...(body ? { body: JSON.stringify(body) } : {}),
     signal: AbortSignal.timeout(8000),
   });
   let result;
-  try { result = await response.json(); } catch { throw Object.assign(new Error('DANA mengirim respons yang tidak dapat dibaca.'), { status: 502 }); }
-  if (!response.ok || !String(result.responseCode || '').startsWith('200')) {
-    console.error('DANA API rejected request:', response.status, result.responseCode || 'unknown');
-    throw Object.assign(new Error('DANA belum dapat memproses QRIS. Coba lagi beberapa saat.'), { status: 502 });
+  try { result = await response.json(); } catch { throw Object.assign(new Error('Respons pembayaran tidak dapat dibaca.'), { status: 502 }); }
+  if (result && typeof result === 'object') Object.defineProperty(result, MIDTRANS_HTTP_STATUS, { value: response.status });
+  if (!response.ok) {
+    console.error('Payment API rejected request:', JSON.stringify({ httpStatus: response.status, code: result.status_code || 'unknown', message: result.status_message || '' }));
+    const detail = response.status === 401
+      ? 'Koneksi QRIS ditolak. Periksa kecocokan Server Key dan mode akun Midtrans di server.'
+      : response.status === 400
+        ? 'Midtrans menolak pesanan. Pastikan kanal QRIS aktif dan nominal pesanan memenuhi ketentuan akun.'
+        : 'QRIS belum dapat diproses. Coba lagi beberapa saat.';
+    throw Object.assign(new Error(detail), { status: 502, providerRejected: true });
   }
   return result;
 }
 
-async function dynamicQrImage(result, config) {
-  if (typeof result.qrImage === 'string' && result.qrImage.length > 0) {
-    const dataUrl = result.qrImage.match(/^data:image\/(png|jpeg|webp);base64,([A-Za-z0-9+/]+={0,2})$/i);
-    if (dataUrl) return `data:image/${dataUrl[1].toLowerCase()};base64,${dataUrl[2]}`;
-    if (/^[A-Za-z0-9+/]+={0,2}$/.test(result.qrImage)) {
-      const bytes = Buffer.from(result.qrImage, 'base64');
-      const mime = uploadedImage(bytes, 'image/png') ? 'png' : uploadedImage(bytes, 'image/jpeg') ? 'jpeg' : uploadedImage(bytes, 'image/webp') ? 'webp' : '';
-      if (mime) return `data:image/${mime};base64,${result.qrImage}`;
+async function midtransQrImage(result, config) {
+  if (typeof result.qr_string === 'string' && result.qr_string.length > 0 && result.qr_string.length <= 4096) {
+    return QRCode.toDataURL(result.qr_string, { errorCorrectionLevel: 'M', margin: 2, width: 440 });
+  }
+  const qrActions = ['generate-qr-code-v2', 'generate-qr-code']
+    .map((name) => result.actions?.find((action) => action.name === name))
+    .filter((action) => action?.url);
+  const apiUrl = new URL(config.baseUrl);
+  for (const qrAction of qrActions) {
+    let qrUrl;
+    try { qrUrl = new URL(qrAction.url); } catch { qrUrl = null; }
+    const isQrisImagePath = qrUrl && /^\/{1,2}v[24]\/qris(?:\/[A-Za-z0-9_-]+){1,2}\/qr-code\/?$/.test(qrUrl.pathname);
+    const secureProviderUrl = qrUrl?.protocol === 'https:';
+    const isolatedTestUrl = process.env.NODE_ENV === 'test'
+      && ['localhost', '127.0.0.1'].includes(apiUrl.hostname)
+      && qrUrl?.origin === apiUrl.origin
+      && qrUrl.protocol === 'http:';
+    if (qrUrl && qrUrl.origin === apiUrl.origin && (secureProviderUrl || isolatedTestUrl) && isQrisImagePath) {
+      try {
+        const response = await fetch(qrUrl, { redirect: 'error', headers: { Accept: 'image/png,image/jpeg,image/webp', Authorization: midtransAuthorization(config) }, signal: AbortSignal.timeout(8000) });
+        const contentType = response.headers.get('content-type')?.split(';')[0].toLowerCase();
+        if (response.ok && ['image/png', 'image/jpeg', 'image/webp'].includes(contentType)) {
+          const bytes = Buffer.from(await response.arrayBuffer());
+          if (bytes.length <= 2 * 1024 * 1024 && uploadedImage(bytes, contentType)) return `data:${contentType};base64,${bytes.toString('base64')}`;
+        }
+      } catch (error) {
+        console.warn('Midtrans QR image endpoint unavailable; trying the next QR source.', { action: qrAction.name, error: error.name || 'FetchError' });
+      }
     }
   }
-  if (typeof result.qrUrl === 'string') {
-    try {
-      const qrUrl = new URL(result.qrUrl);
-      const apiHost = new URL(config.baseUrl).hostname;
-      if (qrUrl.protocol === 'https:' && (qrUrl.hostname === apiHost || qrUrl.hostname === 'dana.id' || qrUrl.hostname.endsWith('.dana.id'))) return qrUrl.href;
-    } catch { /* invalid DANA QR URL */ }
-  }
-  if (typeof result.qrContent === 'string' && result.qrContent.length > 0 && result.qrContent.length <= 512) {
-    return QRCode.toDataURL(result.qrContent, { errorCorrectionLevel: 'M', margin: 2, width: 440 });
-  }
-  throw Object.assign(new Error('DANA tidak mengembalikan isi QRIS yang bisa ditampilkan. Pesanan belum dibuat.'), { status: 502 });
+  throw Object.assign(new Error('Respons pembayaran tidak berisi QRIS yang dapat ditampilkan.'), { status: 502 });
+}
+
+function verifyMidtransSignature(body, config = midtransConfig()) {
+  if (!config || typeof body?.signature_key !== 'string') return false;
+  const raw = `${body.order_id || ''}${body.status_code || ''}${body.gross_amount || ''}${config.serverKey}`;
+  const expected = crypto.createHash('sha512').update(raw).digest('hex');
+  const actual = Buffer.from(body.signature_key, 'hex');
+  const expectedBytes = Buffer.from(expected, 'hex');
+  return actual.length === expectedBytes.length && crypto.timingSafeEqual(actual, expectedBytes);
 }
 
 async function readRawBody(req, limit = 65536) {
@@ -228,23 +236,27 @@ async function readRawBody(req, limit = 65536) {
   try { return { raw, body: JSON.parse(raw || '{}') }; } catch { throw Object.assign(new Error('Isi permintaan tidak valid.'), { status: 400 }); }
 }
 
-async function handleDanaNotify(req, res) {
-  const config = danaConfig();
-  if (!config?.publicKey) return json(res, 503, { responseCode: '5005601', responseMessage: 'Payment notification is not configured.' });
+async function handleMidtransNotify(req, res) {
+  const config = midtransConfig();
+  if (!config) return json(res, 503, { error: 'Payment notification is not configured.' });
   const { body } = await readRawBody(req, 65536);
-  if (!verifyDanaSignature(req, body, config.publicKey)) return json(res, 401, { responseCode: '4015600', responseMessage: 'Invalid signature.' });
-  const order = readOrders().find((entry) => entry.id === body.originalPartnerReferenceNo);
-  if (!order || !matchingDanaPayment(order, body)) return json(res, 404, { responseCode: '4045600', responseMessage: 'Order not found.' });
-  if (body.latestTransactionStatus === '00') {
-    const result = savePaidOrder(order, 'DANA QRIS webhook', body.originalReferenceNo || body.originalPartnerReferenceNo);
-    if (result.error) return json(res, 409, { responseCode: '4095600', responseMessage: 'Order status cannot be updated.' });
-  } else if (body.latestTransactionStatus === '05' && order.paymentStatus === 'pending') {
+  if (!verifyMidtransSignature(body, config)) return json(res, 401, { error: 'Invalid payment notification signature.' });
+  const order = readOrders().find((entry) => entry.id === body.order_id && entry.paymentProvider === 'qris_dynamic');
+  const amount = Number(body.gross_amount);
+  const expectedMerchantId = order?.midtransMerchantId || config.merchantId;
+  if (!order || body.currency && body.currency !== 'IDR' || !Number.isFinite(amount) || amount !== Number(order.total) || expectedMerchantId && body.merchant_id && body.merchant_id !== expectedMerchantId) {
+    return json(res, 404, { error: 'Payment transaction does not match an order.' });
+  }
+  if (body.status_code === '200' && ['settlement', 'capture'].includes(body.transaction_status) && (!body.fraud_status || body.fraud_status === 'accept')) {
+    const result = savePaidOrder(order, 'QRIS otomatis', body.transaction_id || body.order_id);
+    if (result.error) return json(res, 409, { error: 'Order status cannot be updated.' });
+  } else if (['expire', 'cancel', 'deny'].includes(body.transaction_status) && order.paymentStatus === 'pending') {
     const orders = readOrders();
     const index = orders.findIndex((entry) => entry.id === order.id);
     orders[index] = { ...orders[index], paymentStatus: 'cancelled', status: 'cancelled', cancelledAt: new Date().toISOString() };
     saveOrders(orders);
   }
-  return json(res, 200, { responseCode: '2005600', responseMessage: 'Successful' });
+  return json(res, 200, { status: 'ok' });
 }
 
 function cookieValue(req) {
@@ -386,6 +398,8 @@ function publicProduct(product, user) {
     return sum + order.items.reduce((count, item) => count + (item.productId === product.id ? item.quantity : 0), 0);
   }, 0);
   retailProduct.sold = actualSales;
+  retailProduct.stock = Number.isSafeInteger(Number(product.stock)) && product.stock !== null ? Number(product.stock) : null;
+  retailProduct.stockAvailable = availableProductStock(product);
   if (userCanResell(user, product.id) && resellerPrice !== null && resellerPrice !== undefined && Number.isSafeInteger(Number(resellerPrice))) {
     return { ...retailProduct, price: Number(resellerPrice), priceContext: 'reseller' };
   }
@@ -410,6 +424,9 @@ function validateProduct(input, id, products) {
   if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(input.slug)) return 'URL produk hanya boleh berisi huruf kecil, angka, dan tanda hubung.';
   if (!readStorefront().categories.some((item) => item.slug === input.category)) return 'Kategori tidak dikenal.';
   if (!Number.isSafeInteger(Number(input.price)) || Number(input.price) < 0) return 'Harga harus berupa angka nol atau lebih.';
+  if (input.stock !== null && input.stock !== '' && input.stock !== undefined && (!Number.isSafeInteger(Number(input.stock)) || Number(input.stock) < 0 || Number(input.stock) > 1000000)) return 'Stok harus berupa bilangan bulat antara 0 dan 1.000.000.';
+  const reserved = reservedProductQuantity(id);
+  if (input.stock !== null && input.stock !== '' && input.stock !== undefined && Number(input.stock) < reserved) return `Stok tidak bisa di bawah ${reserved} unit yang sedang menunggu pembayaran.`;
   if (input.resellerPrice !== null && input.resellerPrice !== '' && input.resellerPrice !== undefined) {
     if (!Number.isSafeInteger(Number(input.resellerPrice)) || Number(input.resellerPrice) < 1 || Number(input.resellerPrice) >= Number(input.price)) return 'Harga reseller harus lebih rendah dari harga retail.';
     if (!Number.isSafeInteger(Number(input.bulkMinimum)) || Number(input.bulkMinimum) < 2 || Number(input.bulkMinimum) > 999) return 'Minimum pembelian reseller harus 2–999 unit.';
@@ -475,11 +492,28 @@ function normalizeProduct(input, id, products) {
     ...input,
     id,
     price: Number(input.price),
+    stock: input.stock === '' || input.stock === null || input.stock === undefined ? null : Number(input.stock),
+    archived: Boolean(input.archived),
     resellerPrice: input.resellerPrice === '' || input.resellerPrice === null || input.resellerPrice === undefined ? null : Number(input.resellerPrice),
     bulkMinimum: input.resellerPrice === '' || input.resellerPrice === null || input.resellerPrice === undefined ? null : Number(input.bulkMinimum),
   };
   const error = validateProduct(product, id, products);
   return error ? { error } : { product };
+}
+
+function reservedProductQuantity(productId, excludeOrderId = '') {
+  const now = Date.now();
+  return readOrders().reduce((sum, order) => {
+    if (order.id === excludeOrderId || order.kind !== 'products' || order.paymentStatus !== 'pending') return sum;
+    const expires = Date.parse(order.paymentExpiresAt || '');
+    if (Number.isFinite(expires) && expires <= now) return sum;
+    return sum + (order.items || []).reduce((quantity, item) => quantity + (item.productId === productId ? Number(item.quantity) || 0 : 0), 0);
+  }, 0);
+}
+
+function availableProductStock(product, excludeOrderId = '') {
+  if (product.stock === null || product.stock === undefined || product.stock === '') return null;
+  return Math.max(0, Number(product.stock) - reservedProductQuantity(product.id, excludeOrderId));
 }
 
 function safeAssetPath(value) {
@@ -543,7 +577,8 @@ function resellerEntitlementsFor(user, orders, products) {
 
 function markOrderPaid(order, provider, reference) {
   if (order.paymentStatus === 'paid') return { order, changed: false };
-  if (order.paymentStatus !== 'pending') return { error: 'Status pembayaran pesanan ini tidak dapat diubah.' };
+  const verifiedLateSettlement = order.paymentStatus === 'cancelled' && provider === 'QRIS otomatis';
+  if (order.paymentStatus !== 'pending' && !verifiedLateSettlement) return { error: 'Status pembayaran pesanan ini tidak dapat diubah.' };
   const now = new Date().toISOString();
   const updated = { ...order, paymentStatus: 'paid', paidAt: now, status: 'paid', paymentVerification: { provider, transactionReference: reference, verifiedAt: now } };
   return { order: updated, changed: true };
@@ -559,11 +594,12 @@ function syncResellerAccess(order, orders) {
   saveUsers(users);
 }
 
-function matchingDanaPayment(order, payment) {
-  const amount = Number(payment?.amount?.value);
-  return payment?.originalPartnerReferenceNo === order.id
-    && payment?.merchantId === danaConfig()?.merchantId
-    && (!payment.amount?.currency || payment.amount.currency === 'IDR')
+function matchingMidtransPayment(order, payment) {
+  const amount = Number(payment?.gross_amount);
+  const merchantId = order.midtransMerchantId || midtransConfig()?.merchantId;
+  return payment?.order_id === order.id
+    && (!merchantId || !payment?.merchant_id || payment.merchant_id === merchantId)
+    && (!payment?.currency || payment.currency === 'IDR')
     && Number.isFinite(amount) && amount === Number(order.total);
 }
 
@@ -574,7 +610,20 @@ function savePaidOrder(order, provider, reference) {
   const result = markOrderPaid(orders[index], provider, reference);
   if (result.error) return result;
   if (result.changed) {
-    orders[index] = result.order;
+    let paidOrder = result.order;
+    if (paidOrder.kind === 'products') {
+      const products = readProducts();
+      for (const item of paidOrder.items || []) {
+        const product = products.find((entry) => entry.id === item.productId);
+        if (product && product.stock !== null && product.stock !== undefined && product.stock !== '') {
+          product.stock = Math.max(0, Number(product.stock) - Number(item.quantity || 0));
+        }
+      }
+      saveProducts(products);
+      paidOrder = { ...paidOrder, stockDeducted: true };
+    }
+    orders[index] = paidOrder;
+    result.order = paidOrder;
     saveOrders(orders);
     syncResellerAccess(result.order, orders);
     saveAudit({ actor: provider, action: 'payment_verified', orderId: result.order.id, amount: result.order.total, transactionReference: reference });
@@ -583,7 +632,7 @@ function savePaidOrder(order, provider, reference) {
 }
 
 async function handleApi(req, res, url) {
-  if (req.method === 'POST' && url.pathname === DANA_QRIS_NOTIFY_PATH) return handleDanaNotify(req, res);
+  if (req.method === 'POST' && url.pathname === MIDTRANS_NOTIFY_PATH) return handleMidtransNotify(req, res);
   if (!localRequest(req)) return json(res, 403, { error: 'Admin hanya dapat diakses dari komputer ini.' });
   if (req.method === 'GET' && url.pathname === '/api/auth/session') {
     const user = activeUser(req);
@@ -592,7 +641,7 @@ async function handleApi(req, res, url) {
   if (req.method === 'GET' && url.pathname === '/api/storefront') return json(res, 200, readStorefront());
   if (req.method === 'GET' && url.pathname === '/api/products') {
     const user = activeUser(req);
-    return json(res, 200, { products: readProducts().map((product) => publicProduct(product, user)) });
+    return json(res, 200, { products: readProducts().filter((product) => !product.archived).map((product) => publicProduct(product, user)) });
   }
   if (req.method === 'GET' && url.pathname === '/api/orders') {
     const user = activeUser(req);
@@ -613,29 +662,24 @@ async function handleApi(req, res, url) {
     if (!user) return json(res, 401, { error: 'Masuk untuk memeriksa pembayaran.' });
     const order = readOrders().find((entry) => entry.id === checkPaymentMatch[1] && entry.userId === user.id);
     if (!order) return json(res, 404, { error: 'Pesanan tidak ditemukan.' });
-    if (order.paymentStatus !== 'pending') return json(res, 200, { order });
-    const config = danaConfig();
-    const payment = await danaRequest(DANA_QRIS_STATUS_PATH, {
-      originalPartnerReferenceNo: order.id,
-      serviceCode: '47',
-      amount: { value: `${Number(order.total).toFixed(2)}`, currency: 'IDR' },
-      merchantId: config.merchantId,
-    }, config);
-    if (payment.originalPartnerReferenceNo && payment.originalPartnerReferenceNo !== order.id) return json(res, 502, { error: 'Respons status pembayaran tidak cocok dengan pesanan.' });
-    if (payment.latestTransactionStatus === '00') {
-      if (!matchingDanaPayment(order, payment)) return json(res, 502, { error: 'Data pembayaran DANA tidak cocok dengan nominal pesanan.' });
-      const result = savePaidOrder(order, 'DANA QRIS query', payment.originalReferenceNo || order.id);
+    if (order.paymentStatus === 'paid' || order.paymentStatus === 'refunded') return json(res, 200, { order });
+    const config = midtransConfig();
+    const payment = await midtransRequest('GET', `/v2/${encodeURIComponent(order.id)}/status`, undefined, config);
+    if (payment.order_id !== order.id) return json(res, 502, { error: 'Status pembayaran tidak cocok dengan pesanan.' });
+    if (['settlement', 'capture'].includes(payment.transaction_status)) {
+      if (!matchingMidtransPayment(order, payment) || payment.status_code !== '200' || payment.fraud_status && payment.fraud_status !== 'accept') return json(res, 502, { error: 'Data pembayaran tidak cocok dengan nominal pesanan.' });
+      const result = savePaidOrder(order, 'QRIS otomatis', payment.transaction_id || order.id);
       const updated = result.order || readOrders().find((entry) => entry.id === order.id);
       return json(res, 200, { order: updated });
     }
-    if (payment.latestTransactionStatus === '05') {
+    if (['expire', 'cancel', 'deny'].includes(payment.transaction_status) && order.paymentStatus === 'pending') {
       const orders = readOrders();
       const index = orders.findIndex((entry) => entry.id === order.id);
       orders[index] = { ...orders[index], paymentStatus: 'cancelled', status: 'cancelled', cancelledAt: new Date().toISOString() };
       saveOrders(orders);
       return json(res, 200, { order: orders[index] });
     }
-    return json(res, 200, { order, providerStatus: payment.latestTransactionStatus || 'pending' });
+    return json(res, 200, { order, providerStatus: payment.transaction_status || 'pending' });
   }
   if (req.method === 'GET' && url.pathname === '/api/admin/session') {
     const session = activeSession(req);
@@ -644,7 +688,7 @@ async function handleApi(req, res, url) {
   if (req.method === 'GET' && url.pathname === '/api/admin/products') {
     const session = activeSession(req);
     if (!session) return json(res, adminAuthStatus(req), { error: 'Masuk sebagai admin untuk melanjutkan.' });
-    return json(res, 200, { products: readProducts() });
+    return json(res, 200, { products: readProducts().map((product) => ({ ...product, stockAvailable: availableProductStock(product) })) });
   }
   if (req.method === 'GET' && url.pathname === '/api/admin/storefront') {
     if (!activeSession(req)) return json(res, adminAuthStatus(req), { error: 'Masuk sebagai admin untuk melanjutkan.' });
@@ -738,8 +782,8 @@ async function handleApi(req, res, url) {
     const user = activeUser(req);
     if (!user) return json(res, 401, { error: 'Masuk sebelum membuat pesanan.' });
     const body = await readBody(req);
-    const config = danaConfig();
-    if (!config) return json(res, 503, { error: 'QRIS dinamis belum siap. Admin perlu mengatur kredensial API DANA di server.' });
+    const config = midtransConfig();
+    if (!config) return json(res, 503, { error: 'QRIS dinamis belum siap. Admin perlu mengatur Server Key di environment server.' });
     const storefront = readStorefront();
     const products = readProducts();
     const now = new Date().toISOString();
@@ -757,11 +801,13 @@ async function handleApi(req, res, url) {
       for (const requested of body.items) {
         const product = products.find((entry) => entry.id === requested?.id);
         const quantity = Number(requested?.quantity);
-        if (!product || !Number.isInteger(quantity) || quantity < 1 || quantity > 99 || product.orderMode === 'preorder' && !product.preOrderConfirmed) return json(res, 400, { error: 'Periksa produk, jumlah, atau ketersediaan stok di keranjang.' });
+        if (!product || product.archived || !Number.isInteger(quantity) || quantity < 1 || quantity > 99 || product.orderMode === 'preorder' && !product.preOrderConfirmed) return json(res, 400, { error: 'Periksa produk, jumlah, atau ketersediaan stok di keranjang.' });
         combined.set(product.id, (combined.get(product.id) || 0) + quantity);
       }
       for (const [productId, quantity] of combined) {
         const product = products.find((entry) => entry.id === productId);
+        const available = availableProductStock(product);
+        if (available !== null && quantity > available) return json(res, 409, { error: `Stok ${product.name} tersisa ${available} unit.` });
         const eligible = userCanResell(user, productId);
         const unitPrice = eligible && Number.isSafeInteger(Number(product.resellerPrice)) ? Number(product.resellerPrice) : Number(product.price);
         items.push({ productId, name: product.name, slug: product.slug, quantity, unitPrice, priceContext: eligible ? 'reseller' : 'retail', bulkMinimumSnapshot: product.bulkMinimum ?? null, lineTotal: unitPrice * quantity });
@@ -771,36 +817,98 @@ async function handleApi(req, res, url) {
     if (!Number.isSafeInteger(total) || total < 1 || total > 100000000) return json(res, 400, { error: 'Total pesanan tidak valid.' });
     const orderId = `BC${Date.now().toString(36).toUpperCase()}${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
     const qrPayload = {
-      merchantId: config.merchantId,
-      storeId: config.storeId,
-      partnerReferenceNo: orderId,
-      amount: { value: Number(total).toFixed(2), currency: 'IDR' },
-      validityPeriod: danaTimestamp(new Date(Date.now() + 15 * 60 * 1000)),
-      additionalInfo: { terminalSource: 'MER', envInfo: { sourcePlatform: 'IPG', orderTerminalType: 'WEB', terminalType: 'WEB' } },
+      payment_type: 'qris',
+      transaction_details: { order_id: orderId, gross_amount: Number(total) },
+      qris: { acquirer: 'gopay' },
     };
-    const generatedQr = await danaRequest(DANA_QRIS_GENERATE_PATH, qrPayload, config);
-    if (generatedQr.partnerReferenceNo && generatedQr.partnerReferenceNo !== orderId) return json(res, 502, { error: 'Referensi QR dari DANA tidak sesuai. Pesanan belum dibuat.' });
-    const qrisImage = await dynamicQrImage(generatedQr, config);
     const order = {
       id: orderId,
       userId: user.id, kind, items, total, currency: 'IDR', createdAt: now,
-      paymentStatus: 'pending', paidAt: null, status: 'awaiting_payment', fulfillmentStatus: 'not_started',
-      paymentInstructions: 'Pindai QR ini dengan aplikasi yang mendukung QRIS. Pastikan nominal di aplikasi sama dengan total pesanan.',
-      qrisImage,
-      qrisContent: generatedQr.qrContent || '',
-      danaReferenceNo: generatedQr.referenceNo || '',
-      paymentExpiresAt: generatedQr.validityPeriod || qrPayload.validityPeriod,
+      paymentProvider: 'qris_dynamic', midtransMerchantId: '',
+      paymentStatus: 'pending', paidAt: null, status: 'creating_qris', fulfillmentStatus: 'not_started',
+      paymentInstructions: 'Pindai QR ini dengan aplikasi yang mendukung QRIS, lalu selesaikan pembayaran sebelum QR kedaluwarsa.',
       resellerTerms: kind === 'reseller-plan' ? storefront.resellerPlan.terms : '',
     };
     const orders = readOrders();
     orders.push(order);
     saveOrders(orders);
+    let generatedQr;
+    let providerResponseMayHaveCreatedCharge = false;
+    let qrisImage;
+    try {
+      generatedQr = await midtransRequest('POST', '/v2/charge', qrPayload, config);
+      const providerHttpStatus = Number(generatedQr[MIDTRANS_HTTP_STATUS]);
+      const providerStatusCode = String(generatedQr.status_code || '');
+      providerResponseMayHaveCreatedCharge = providerHttpStatus >= 200 && providerHttpStatus < 300 && !/^4\d{2}$/.test(providerStatusCode);
+      const responseMatches = {
+        orderId: generatedQr.order_id === orderId,
+        amount: Number(generatedQr.gross_amount) === total,
+        method: generatedQr.payment_type === 'qris',
+        status: generatedQr.transaction_status === 'pending',
+        accepted: ['200', '201'].includes(String(generatedQr.status_code)),
+      };
+      const mismatches = Object.entries(responseMatches).filter(([, matches]) => !matches).map(([field]) => field);
+      if (mismatches.length) {
+        const statusMessage = typeof generatedQr.status_message === 'string'
+          ? generatedQr.status_message.replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/(?:SB-)?Mid-server-[A-Za-z0-9_-]+/gi, '[redacted]').slice(0, 180)
+          : '';
+        const responseFields = Object.keys(generatedQr).filter((key) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(key)).slice(0, 32);
+        const actionNames = Array.isArray(generatedQr.actions)
+          ? generatedQr.actions.map((action) => action?.name).filter((name) => typeof name === 'string' && /^[A-Za-z0-9_-]{1,48}$/.test(name)).slice(0, 12)
+          : [];
+        console.error('Midtrans QRIS charge response mismatch:', JSON.stringify({
+          httpStatus: generatedQr[MIDTRANS_HTTP_STATUS] ?? null,
+          statusCode: typeof generatedQr.status_code === 'string' || typeof generatedQr.status_code === 'number' ? String(generatedQr.status_code).slice(0, 16) : '',
+          statusMessage,
+          responseFields,
+          actionNames,
+          ...responseMatches,
+          merchantIdConfigured: Boolean(config.merchantId),
+          merchantIdMatches: !config.merchantId || !generatedQr.merchant_id || generatedQr.merchant_id === config.merchantId,
+          transactionIdPresent: Boolean(generatedQr.transaction_id),
+          qrStringPresent: Boolean(generatedQr.qr_string),
+        }));
+        if (providerStatusCode === '402' && /payment channel is not activated/i.test(String(generatedQr.status_message || ''))) {
+          throw Object.assign(new Error('Kanal QRIS GoPay belum aktif untuk Server Key ini. Pastikan QRIS aktif pada akun Production yang sama dengan MIDTRANS_SERVER_KEY di .env.'), { status: 502 });
+        }
+        const labels = { orderId: 'ID pesanan', amount: 'nominal', method: 'metode QRIS', status: 'status transaksi', accepted: 'kode respons' };
+        throw Object.assign(new Error(`Respons pembayaran Midtrans tidak cocok pada ${mismatches.map((field) => labels[field]).join(', ')}.`), { status: 502 });
+      }
+      if (config.merchantId && generatedQr.merchant_id && generatedQr.merchant_id !== config.merchantId) console.warn('MIDTRANS_MERCHANT_ID differs from the authenticated charge response; using the transaction merchant ID.');
+      order.midtransMerchantId = typeof generatedQr.merchant_id === 'string' ? generatedQr.merchant_id : '';
+      qrisImage = await midtransQrImage(generatedQr, config);
+    } catch (error) {
+      if (providerResponseMayHaveCreatedCharge) {
+        const savedOrders = readOrders();
+        const savedIndex = savedOrders.findIndex((entry) => entry.id === orderId);
+        if (savedIndex >= 0) savedOrders[savedIndex] = {
+          ...savedOrders[savedIndex], status: 'awaiting_payment',
+          midtransTransactionId: generatedQr.transaction_id || '',
+          midtransMerchantId: typeof generatedQr.merchant_id === 'string' ? generatedQr.merchant_id : '',
+          paymentExpiresAt: generatedQr.expiry_time || '',
+        };
+        saveOrders(savedOrders);
+        throw Object.assign(new Error('QRIS belum dapat ditampilkan. Periksa menu Pesanan sebelum mencoba lagi.'), { status: 502 });
+      } else {
+        saveOrders(readOrders().filter((entry) => entry.id !== orderId));
+      }
+      throw error;
+    }
+    order.status = 'awaiting_payment';
+    order.qrisImage = qrisImage;
+    order.midtransTransactionId = generatedQr.transaction_id || '';
+    order.midtransMerchantId = typeof generatedQr.merchant_id === 'string' ? generatedQr.merchant_id : '';
+    order.paymentExpiresAt = generatedQr.expiry_time || '';
+    const savedOrders = readOrders();
+    const savedIndex = savedOrders.findIndex((entry) => entry.id === orderId);
+    if (savedIndex >= 0) savedOrders[savedIndex] = order;
+    saveOrders(savedOrders);
     return json(res, 201, { order });
   }
 
   const adminPaymentMatch = url.pathname.match(/^\/api\/admin\/orders\/([A-Za-z0-9-]+)\/confirm-payment$/);
   if (req.method === 'POST' && adminPaymentMatch) {
-    return json(res, 410, { error: 'Konfirmasi manual dinonaktifkan. Status hanya berubah setelah dikonfirmasi oleh API DANA.' });
+    return json(res, 410, { error: 'Konfirmasi manual dinonaktifkan. Status hanya berubah setelah pembayaran dikonfirmasi otomatis.' });
   }
 
   const adminRefundMatch = url.pathname.match(/^\/api\/admin\/orders\/([A-Za-z0-9-]+)\/refund$/);
@@ -896,6 +1004,35 @@ async function handleApi(req, res, url) {
     return json(res, 201, { product: normalized.product });
   }
 
+  if (req.method === 'POST' && url.pathname === '/api/admin/products/bulk') {
+    const admin = requireAdmin(req);
+    if (!admin) return json(res, adminAuthStatus(req), { error: 'Sesi admin berakhir. Silakan masuk lagi.' });
+    const body = await readBody(req);
+    const ids = Array.isArray(body.productIds) ? [...new Set(body.productIds.filter((id) => typeof id === 'string'))].slice(0, 200) : [];
+    const action = body.action;
+    if (!ids.length || !['archive', 'restore', 'delete'].includes(action)) return json(res, 400, { error: 'Pilih produk dan tindakan yang tersedia.' });
+    const products = readProducts();
+    const selected = new Set(ids);
+    const found = products.filter((product) => selected.has(product.id));
+    if (found.length !== ids.length) return json(res, 404, { error: 'Sebagian produk tidak ditemukan. Muat ulang daftar produk.' });
+    const blocked = [];
+    let changedIds = [];
+    if (action === 'delete') {
+      const orders = readOrders();
+      const orderLinkedIds = new Set(orders.filter((order) => order.paymentStatus !== 'refunded').flatMap((order) => (order.items || []).map((item) => item.productId)));
+      const removable = found.filter((product) => !orderLinkedIds.has(product.id));
+      blocked.push(...found.filter((product) => orderLinkedIds.has(product.id)).map((product) => ({ id: product.id, name: product.name, reason: 'Memiliki riwayat pesanan; arsipkan saja.' })));
+      changedIds = removable.map((product) => product.id);
+      saveProducts(products.filter((product) => !changedIds.includes(product.id)));
+    } else {
+      changedIds = found.map((product) => product.id);
+      const archived = action === 'archive';
+      saveProducts(products.map((product) => selected.has(product.id) ? { ...product, archived } : product));
+    }
+    saveAudit({ actor: admin.email, action: `products_bulk_${action}`, productIds: changedIds, blockedProductIds: blocked.map((item) => item.id) });
+    return json(res, 200, { changedIds, blocked, products: readProducts() });
+  }
+
   if (req.method === 'GET' && url.pathname === '/api/admin/storefront') {
     if (!activeSession(req)) return json(res, adminAuthStatus(req), { error: 'Masuk sebagai admin untuk melanjutkan.' });
     return json(res, 200, readStorefront());
@@ -980,7 +1117,7 @@ function serveStatic(req, res, pathname) {
     'Cache-Control': 'no-store',
     'X-Content-Type-Options': 'nosniff',
     'Referrer-Policy': 'strict-origin-when-cross-origin',
-      'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: https://*.dana.id; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'",
+      'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'",
   });
   res.end(req.method === 'HEAD' ? undefined : contents);
 }
