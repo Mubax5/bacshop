@@ -1032,3 +1032,43 @@ A meaningful architecture change should document:
 - migration impact;
 - rollback/compatibility considerations;
 - tests required to prove the change.
+
+---
+
+## 25. Phase 0 migration decision (2026-10-01)
+
+### Decision
+
+Next.js becomes the target canonical application runtime, using the existing `app/` route tree and the `src/application`, `src/domain`, `src/infrastructure`, and `src/ui` boundaries. PostgreSQL with Prisma is the target durable persistence layer unless a later evidence-based architecture record selects a stronger compatible option.
+
+The current legacy runtime (`server.js`, `app.js`, `styles.css`, JSON/private files) remains live on `127.0.0.1:4173` during migration. It is a compatibility and evidence source while each capability reaches parity. It is not a second permanent business model. The legacy runtime must not be removed until the capability matrix and migration gates prove that the Next path owns the equivalent behavior.
+
+The decision preserves the approved Bacshop storefront visual language. Migration must reach visual parity with the current orange marketplace composition, product cards, desktop density, and mobile app-like shell before discretionary UI changes are considered.
+
+### Current evidence
+
+The Phase 0 checkout at `76bfeb8d99fc96b4e3a44540b5a6ae583d9b8e85` contains two overlapping architectures:
+
+- Legacy working behavior in `server.js`/`app.js`, with JSON catalog and private files for users, orders, storefront, audit, and admin data; process-memory sessions and rate-limit maps; and an implemented Midtrans QRIS boundary.
+- Next routes and domain/application seams in `app/` and `src/`, with development-only authentication, seeded catalog, process-memory carts/orders/notifications/reseller/admin records/wallet ledger, and a development payment callback/provider.
+
+The recorded baseline is: `npm ci` pass; lint 19 errors and 5 warnings; typecheck pass; Vitest 8 files/42 tests pass; legacy Node tests 10 pass and 3 fail out of 13 because of stale DANA assertions/configuration against the Midtrans runtime; Next 15.5.26 build pass with 41 static pages; `npm audit --omit=dev` reports zero vulnerabilities; Node `24.11.0`. These are baseline facts, not completion claims.
+
+### Required boundaries
+
+1. The candidate Next runtime runs in a separate process, environment, port, and database/schema while `4173` remains available.
+2. Each capability has one source-of-truth owner at cutover. Permanent dual writes are prohibited.
+3. Route handlers call application use cases. Use cases enforce authorization and domain invariants. Infrastructure adapters own PostgreSQL, auth, Midtrans, media, notifications, audit, and shared rate-limit integration.
+4. Retail Store, Customer Account, Reseller Center, and Admin Center remain separate contexts. An approved reseller sees retail pricing in the Retail Store and authorized reseller pricing only inside the Reseller Center.
+5. Commercial snapshots are immutable. Current catalog state cannot be used to reconstruct an historical order.
+6. Existing private files are copied only through a validated, redacted, idempotent import process and remain recoverable until parity, cutover, and rollback evidence are accepted.
+
+### Migration records
+
+The detailed evidence and execution contract live in:
+
+- `docs/production/phase-0-baseline.md` — repository identity, baseline checks, runtime inventory, and open gaps;
+- `docs/production/capability-matrix.md` — UI route, server interface, auth/permission, persistence, source of truth, audit, tests, status, and remaining gap for each objective capability;
+- `docs/production/migration-runbook.md` — interfaces, snapshots, separate runtime contexts, import order, phase gates, cutover, and rollback.
+
+Any later architecture change must update these records or add a dated decision record. A successful build or a rendered route alone is insufficient evidence for changing a capability's status to complete.
