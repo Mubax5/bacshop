@@ -7,5 +7,9 @@ const compat = new FlatCompat({ baseDirectory: dirname(fileURLToPath(import.meta
 
 export default defineConfig([
   ...compat.extends("next/core-web-vitals", "next/typescript"),
-  globalIgnores([".next/**", "node_modules/**", "coverage/**", "next-env.d.ts"]),
+  {
+    files: ["server.js", "test/**/*.js"],
+    rules: { "@typescript-eslint/no-require-imports": "off" },
+  },
+  globalIgnores([".next/**", "node_modules/**", "coverage/**", "next-env.d.ts", "src/generated/prisma/**", ".superpowers/**", ".local-db/**"]),
 ]);

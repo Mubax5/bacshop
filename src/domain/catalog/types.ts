@@ -14,9 +14,10 @@ export interface CatalogSku {
   warranty: string;
   support: string;
   stock: number;
+  inventoryMode?: "finite" | "unlimited";
   availability: ProductAvailability;
   retailPrice: number;
-  resellerPrices: Record<ResellerTier, number>;
+  resellerPrices: Partial<Record<ResellerTier, number>>;
 }
 
 export interface RetailCatalogItem {

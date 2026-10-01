@@ -44,8 +44,9 @@ export async function prepareResellerPurchase(input: {
     if (seen.has(candidate.sku)) return invalid();
     seen.add(candidate.sku);
     const sku = await catalog.findSku(candidate.sku);
-    if (!sku || sku.availability !== "available" || sku.stock < 1) return invalid();
-    const quantity = Math.min(candidate.quantity, sku.stock);
+    if (!sku || sku.availability !== "available" || (sku.inventoryMode !== "unlimited" && sku.stock < 1) || sku.resellerPrices[input.context.tier] === undefined) return invalid();
+    if (candidate.quantity > 99 || (sku.inventoryMode !== "unlimited" && candidate.quantity > sku.stock)) return invalid();
+    const quantity = candidate.quantity;
     lines.push({ sku: sku.sku, productName: sku.productName, quantity, resellerPrice: resolvePrice(sku, input.context) });
   }
   const subtotal = lines.reduce((sum, line) => sum + line.resellerPrice * line.quantity, 0);

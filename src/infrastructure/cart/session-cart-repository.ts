@@ -50,12 +50,12 @@ export async function reconcileRetailCart(
   const removedSkus: string[] = [];
   for (const stored of storedLines) {
     const sku = await catalog.findSku(stored.sku);
-    if (!sku || sku.availability !== "available" || sku.stock <= 0 || !Number.isInteger(stored.quantity) || stored.quantity < 1) {
+    if (!sku || sku.availability !== "available" || (sku.inventoryMode !== "unlimited" && sku.stock <= 0) || !Number.isInteger(stored.quantity) || stored.quantity < 1) {
       removedSkus.push(stored.sku);
       await repository.remove(sessionId, stored.sku);
       continue;
     }
-    lines.push({ sku: sku.sku, productName: sku.productName, quantity: Math.min(stored.quantity, sku.stock), retailPrice: sku.retailPrice, availability: "available" });
+    lines.push({ sku: sku.sku, productName: sku.productName, quantity: stored.quantity, retailPrice: sku.retailPrice, availability: "available" });
   }
   return { lines, subtotal: lines.reduce((sum, line) => sum + line.retailPrice * line.quantity, 0), removedSkus };
 }

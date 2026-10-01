@@ -12,7 +12,7 @@ export async function getResellerCatalog(
     throw new Error("Unauthorized reseller catalog access");
   }
   const skus = await repository.listSkus();
-  return skus.map((sku) => ({
+  return skus.filter((sku) => sku.resellerPrices[context.tier] !== undefined).map((sku) => ({
     sku: sku.sku,
     productName: sku.productName,
     resellerPrice: resolvePrice(sku, context),

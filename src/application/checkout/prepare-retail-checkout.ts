@@ -37,11 +37,14 @@ export async function prepareRetailCheckout(input: {
     if (seen.has(candidate.sku)) return { status: "invalid-input", lines: [], subtotal: 0, message: "Produk keranjang tidak valid." };
     seen.add(candidate.sku);
     const sku = await catalog.findSku(candidate.sku);
-    if (!sku || sku.availability !== "available" || sku.stock <= 0) {
+    if (!sku || sku.availability !== "available" || (sku.inventoryMode !== "unlimited" && sku.stock <= 0)) {
       removedSkus.push(candidate.sku);
       continue;
     }
-    const quantity = Math.min(candidate.quantity, sku.stock);
+    if (candidate.quantity > 99 || (sku.inventoryMode !== "unlimited" && candidate.quantity > sku.stock)) {
+      return { status: "invalid-input", lines: [], subtotal: 0, message: "Jumlah yang diminta melebihi stok tersedia. Ubah jumlah di keranjang." };
+    }
+    const quantity = candidate.quantity;
     retailLines.push({ sku: sku.sku, productName: sku.productName, quantity, retailPrice: sku.retailPrice, availability: "available" });
   }
   const subtotal = retailLines.reduce((sum, line) => sum + line.retailPrice * line.quantity, 0);
