@@ -301,6 +301,8 @@
     const count = cartQuantity();
     const detailSlug = path.startsWith('/produk/') ? path.split('/')[2] : '';
     const detailProduct = PRODUCTS.find((product) => product.slug === safeDecode(detailSlug));
+    const detailBulkMinimum = params.get('bulk') === '1' ? Math.max(1, Number(detailProduct?.bulkUnlockQuantity) || 1) : 1;
+    const detailBulkStockBlocked = detailBulkMinimum > 1 && detailProduct?.stockAvailable !== null && detailProduct?.stockAvailable !== undefined && Number(detailProduct.stockAvailable) < detailBulkMinimum;
     const accountHref = currentUser ? '#/akun' : '#/masuk';
     const accountControl = adminPreviewMode
       ? '<span class="admin-preview-user-label">Admin · pratinjau</span>'
@@ -323,12 +325,12 @@
       <div class="mobile-search-row">${headerSearch('mobile', query)}</div>
     </header>
     <main class="page-container" id="main" tabindex="-1">${content}</main>
-    ${detailProduct ? `<div class="mobile-purchase"><div><small>${detailProduct.priceContext === 'reseller' ? 'Harga reseller' : 'Harga retail'}</small><strong>${rupiah(detailProduct.price)}</strong></div>${adminPreviewMode ? '<span class="button button-disabled" aria-disabled="true">Mode pratinjau</span>' : detailProduct.stockAvailable === 0 ? '<span class="button button-disabled" aria-disabled="true">Stok habis</span>' : detailProduct.orderMode === 'preorder' && !detailProduct.preOrderConfirmed ? `<span class="button button-disabled" aria-disabled="true">Stok dikonfirmasi sebelum pesan</span>` : `<button class="button button-primary" type="button" data-purchase-open="${detailProduct.id}" data-purchase-mode="buy">Beli sekarang</button>`}</div>` : ''}
+    ${detailProduct ? `<div class="mobile-purchase"><div><small>${detailProduct.priceContext === 'reseller' ? 'Harga reseller' : 'Harga retail'}</small><strong>${rupiah(detailProduct.price)}</strong></div>${adminPreviewMode ? '<span class="button button-disabled" aria-disabled="true">Mode pratinjau</span>' : detailBulkStockBlocked ? `<span class="button button-disabled" aria-disabled="true">Stok belum cukup untuk minimum ${detailBulkMinimum}</span>` : detailProduct.stockAvailable === 0 ? '<span class="button button-disabled" aria-disabled="true">Stok habis</span>' : detailProduct.orderMode === 'preorder' && !detailProduct.preOrderConfirmed ? `<span class="button button-disabled" aria-disabled="true">Stok dikonfirmasi sebelum pesan</span>` : `<button class="button button-primary" type="button" data-purchase-open="${detailProduct.id}" data-purchase-mode="buy" data-default-quantity="${detailBulkMinimum}" data-minimum-quantity="${detailBulkMinimum}">Beli sekarang</button>`}</div>` : ''}
     <footer class="site-footer"><div class="footer-inner">
       <div class="footer-brand-col"><a class="brand footer-brand" href="#/">Bacshop</a><p class="footer-summary">Periksa detail produk dan ketentuan sebelum membeli.</p></div>
       <div class="footer-col"><h3>Belanja</h3><a href="#/kategori/semua">Semua produk</a><a href="#/kategori/ai">AI & produktivitas</a><a href="#/kategori/streaming">Streaming</a><a href="#/promo">Promo</a></div>
       <div class="footer-col"><h3>Bacshop</h3><a href="#/program-reseller">Program reseller</a><a href="#/faq">FAQ</a><a href="#/privasi">Kebijakan privasi</a><a href="#/ketentuan-layanan">Ketentuan layanan</a><a href="https://t.me/Mubacs" target="_blank" rel="noopener noreferrer">Bantuan · Telegram @Mubacs</a></div>
-      <div class="footer-col"><h3>Akun</h3><a href="#/akun">Profil</a><a href="#/pesanan">Pesanan</a><a href="#/keranjang">Keranjang</a><a href="#/masuk">Masuk</a></div>
+      ${adminPreviewMode ? '<div class="footer-col"><h3>Pratinjau</h3><a href="#/admin">Kembali ke admin</a><p class="footer-preview-note">Halaman akun dan pesanan tidak tersedia dalam pratinjau.</p></div>' : '<div class="footer-col"><h3>Akun</h3><a href="#/akun">Profil</a><a href="#/pesanan">Pesanan</a><a href="#/keranjang">Keranjang</a><a href="#/masuk">Masuk</a></div>'}
     </div><div class="footer-bottom"><span>© Bacshop</span><span>Periksa detail produk dan ketentuan sebelum membayar.</span></div></footer>
     ${adminPreviewMode ? `<nav class="mobile-bottom admin-preview-bottom" aria-label="Navigasi pratinjau"><a class="mobile-nav-link" href="#/kategori/semua">${feather('grid')}<span>Belanja</span></a><a class="mobile-nav-link" href="#/admin">${feather('arrow-right')}<span>Kembali ke admin</span></a></nav>` : `<nav class="mobile-bottom" aria-label="Navigasi mobile">
       <a class="mobile-nav-link" href="#/"${activeNav(path, 'Beranda')}>${feather('home')}<span>Beranda</span></a>
@@ -394,12 +396,14 @@
     </article>`;
   }
 
-  function purchaseDialogMarkup(product, mode, quantity) {
+  function purchaseDialogMarkup(product, mode, quantity, minimumQuantity = 1) {
     const specifications = (product.specifications || []).map((specification) => `<label class="purchase-specification-field"><span>${escapeHtml(specification.name)}</span><select name="${escapeHtml(specification.id)}" data-purchase-specification="${escapeHtml(specification.id)}" ${specification.required === false ? '' : 'required'}>${specification.required === false ? '<option value="">Tanpa pilihan</option>' : '<option value="">Pilih terlebih dahulu</option>'}${(specification.options || []).map((option) => `<option value="${escapeHtml(option.value)}">${escapeHtml(option.label)}${Number(option.priceAdjustment) ? ` · ${Number(option.priceAdjustment) > 0 ? '+' : ''}${rupiah(Number(option.priceAdjustment))}` : ''}</option>`).join('')}</select></label>`).join('');
     const available = product.stockAvailable === null || product.stockAvailable === undefined ? 99 : Math.max(0, Number(product.stockAvailable));
-    const safeQuantity = Math.max(1, Math.min(99, Number(quantity) || 1, available || 1));
+    const minimum = Math.max(1, Math.min(99, Number(minimumQuantity) || 1));
+    const requested = Math.max(minimum, Number(quantity) || minimum);
+    const safeQuantity = Math.max(1, Math.min(99, requested, available || 1));
     const action = mode === 'buy' ? 'Beli sekarang' : 'Tambah ke keranjang';
-    return `<form class="product-purchase-form" data-purchase-form><header class="product-purchase-header"><div><span class="product-category">${escapeHtml(CATEGORIES.find((category) => category.slug === product.category)?.name || 'Produk digital')}</span><h2 id="purchase-dialog-title">Atur pesanan</h2><p>${escapeHtml(product.name)}</p></div><button class="icon-button" type="button" data-close-purchase aria-label="Tutup">${feather('x')}</button></header><div class="product-purchase-fields">${specifications || '<p class="purchase-no-specification">Produk ini tidak memiliki pilihan varian. Tentukan jumlah yang ingin dipesan.</p>'}<label class="purchase-quantity-field"><span>Jumlah</span><input type="number" min="1" max="${Math.max(1, Math.min(99, available || 99))}" value="${safeQuantity}" inputmode="numeric" data-purchase-quantity required /></label></div><div class="purchase-price-preview"><span>Harga per item</span><strong data-purchase-price>${rupiah(product.price)}</strong></div><p class="purchase-selection-error" data-purchase-error role="status" aria-live="polite" hidden></p><footer class="product-purchase-actions"><button class="button" type="button" data-close-purchase>Batal</button><button class="button button-primary" type="submit" data-purchase-submit>${action}</button></footer></form>`;
+    return `<form class="product-purchase-form" data-purchase-form data-minimum-quantity="${minimum}" data-stock-limit="${available}"><header class="product-purchase-header"><div><span class="product-category">${escapeHtml(CATEGORIES.find((category) => category.slug === product.category)?.name || 'Produk digital')}</span><h2 id="purchase-dialog-title">Atur pesanan</h2><p>${escapeHtml(product.name)}</p></div><button class="icon-button" type="button" data-close-purchase aria-label="Tutup">${feather('x')}</button></header><div class="product-purchase-fields">${specifications || '<p class="purchase-no-specification">Produk ini tidak memiliki pilihan varian. Tentukan jumlah yang ingin dipesan.</p>'}<label class="purchase-quantity-field"><span>Jumlah${minimum > 1 ? ` · minimum ${minimum} unit` : ''}</span><input type="number" min="${minimum}" max="${Math.max(1, Math.min(99, available || 99))}" value="${safeQuantity}" inputmode="numeric" data-purchase-quantity required /></label></div><div class="purchase-price-preview"><span>Harga per item</span><strong data-purchase-price>${rupiah(product.price)}</strong></div><p class="purchase-selection-error" data-purchase-error role="status" aria-live="polite" ${available < minimum ? '' : 'hidden'}>${available < minimum ? `Stok tersisa ${available} unit, belum cukup untuk minimum ${minimum} unit.` : ''}</p><footer class="product-purchase-actions"><button class="button" type="button" data-close-purchase>Batal</button><button class="button button-primary" type="submit" data-purchase-submit>${action}</button></footer></form>`;
   }
 
   function categoryLinks() {
@@ -533,14 +537,18 @@
     const needsStockConfirmation = product.orderMode === 'preorder' && !product.preOrderConfirmed;
     const outOfStock = product.stockAvailable !== null && product.stockAvailable !== undefined && Number(product.stockAvailable) === 0;
     const bulkQuantity = Number(product.bulkUnlockQuantity) || 1;
-    const requestedQuantity = Math.max(1, Math.min(99, Number(params.get('qty')) || bulkQuantity));
-    const purchaseAction = outOfStock
+    const isBulkPurchase = params.get('bulk') === '1';
+    const requestedQuantity = Math.max(isBulkPurchase ? bulkQuantity : 1, Math.min(99, Number(params.get('qty')) || bulkQuantity));
+    const bulkStockBlocked = isBulkPurchase && product.stockAvailable !== null && product.stockAvailable !== undefined && Number(product.stockAvailable) < bulkQuantity;
+    const purchaseAction = bulkStockBlocked
+      ? `<button class="button button-disabled" type="button" disabled>Stok belum cukup untuk minimum ${bulkQuantity}</button>`
+      : outOfStock
       ? `<button class="button button-disabled" type="button" disabled>Stok habis</button>`
       : needsStockConfirmation
       ? `<button class="button button-disabled" type="button" disabled>Stok dikonfirmasi sebelum pesan</button>`
       : adminPreviewMode
         ? '<span class="button button-disabled" aria-disabled="true">Mode pratinjau</span>'
-        : `<button class="button button-primary" type="button" data-purchase-open="${product.id}" data-purchase-mode="buy" data-default-quantity="${params.get('bulk') === '1' ? requestedQuantity : 1}">Beli sekarang</button><button class="button" type="button" data-purchase-open="${product.id}" data-purchase-mode="cart" data-default-quantity="${params.get('bulk') === '1' ? requestedQuantity : 1}">Tambah ke keranjang</button>`;
+        : `<button class="button button-primary" type="button" data-purchase-open="${product.id}" data-purchase-mode="buy" data-default-quantity="${requestedQuantity}" data-minimum-quantity="${isBulkPurchase ? bulkQuantity : 1}">Beli sekarang</button><button class="button" type="button" data-purchase-open="${product.id}" data-purchase-mode="cart" data-default-quantity="${requestedQuantity}" data-minimum-quantity="${isBulkPurchase ? bulkQuantity : 1}">Tambah ke keranjang</button>`;
     const category = CATEGORIES.find((item) => item.slug === product.category) || { name: 'Produk digital' };
     const terms = Object.entries(product.terms || {}).map(([label, value]) => `<li><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></li>`).join('');
     const bulkNote = product.bulkUnlockQuantity ? `<p class="bulk-unlock-note">Beli ${product.bulkUnlockQuantity} unit dalam satu pesanan yang lunas untuk membuka harga reseller produk ini secara permanen.</p>` : '';
@@ -619,22 +627,25 @@
       const price = Number(STOREFRONT.resellerPlan?.price) || 149000;
       const bulkProducts = PRODUCTS.filter((product) => Number(product.bulkUnlockQuantity) >= 2);
       const firstBulk = bulkProducts[0];
-      const bulkSelector = bulkProducts.length ? `<div class="bulk-product-picker"><span>Produk</span>${customDropdown('productId', 'Pilih produk', bulkProducts.map((product) => ({ value: product.id, label: product.name, minimum: Number(product.bulkUnlockQuantity), slug: product.slug })), firstBulk.id, 'bulk-product-select', 'data-bulk-product')}</div><label class="bulk-quantity-picker">Jumlah<input type="number" min="${Number(firstBulk.bulkUnlockQuantity)}" max="99" value="${Math.min(99, Number(firstBulk.bulkUnlockQuantity))}" inputmode="numeric" data-bulk-quantity /></label><p class="bulk-calculator-result" data-bulk-result aria-live="polite"></p><a class="button button-primary bulk-product-link" data-bulk-product-link href="#/produk/${encodeURIComponent(firstBulk.slug)}?bulk=1&amp;qty=${Number(firstBulk.bulkUnlockQuantity)}">Pilih produk</a>` : '<p class="bulk-calculator-result">Belum ada produk yang mengatur minimum pembelian bulk.</p>';
+      const firstMinimum = Number(firstBulk?.bulkUnlockQuantity) || 1;
+      const firstStock = firstBulk?.stockAvailable === null || firstBulk?.stockAvailable === undefined ? 99 : Math.max(0, Number(firstBulk.stockAvailable));
+      const firstBulkUnavailable = firstStock < firstMinimum;
+      const firstQuantity = firstBulkUnavailable ? firstStock : firstMinimum;
+      const bulkSelector = bulkProducts.length ? `<div class="bulk-config-grid"><div class="bulk-product-picker"><span>Produk</span>${customDropdown('productId', 'Pilih produk', bulkProducts.map((product) => ({ value: product.id, label: product.name, minimum: Number(product.bulkUnlockQuantity), slug: product.slug })), firstBulk.id, 'bulk-product-select', 'data-bulk-product')}</div><label class="bulk-quantity-picker"><span>Jumlah</span><input type="number" min="${firstMinimum}" max="${Math.min(99, Math.max(1, firstStock))}" value="${firstQuantity}" inputmode="numeric" data-bulk-quantity ${firstBulkUnavailable ? 'disabled' : ''} /><small>Minimum ${firstMinimum} unit</small></label></div><div class="reseller-bulk-result"><span class="reseller-result-icon">${feather(firstBulkUnavailable ? 'alert-circle' : 'check')}</span><p class="bulk-calculator-result" data-bulk-result aria-live="polite"></p></div><a class="button button-primary bulk-product-link${firstBulkUnavailable ? ' is-disabled' : ''}" data-bulk-product-link aria-disabled="${firstBulkUnavailable}" href="#/produk/${encodeURIComponent(firstBulk.slug)}?bulk=1&amp;qty=${firstQuantity}">${firstBulkUnavailable ? 'Stok belum cukup' : 'Lanjut pilih produk'}</a>` : '<p class="bulk-calculator-result">Belum ada produk yang mengatur minimum pembelian bulk.</p>';
       const planAction = currentUser?.resellerPlan
-        ? '<span class="reseller-active-label">Paket sudah aktif di akunmu</span><a class="button button-primary" href="#/kategori/semua">Belanja dengan harga reseller</a>'
+        ? '<span class="reseller-active-label">Akses seluruh katalog sudah aktif</span><a class="button button-primary" href="#/kategori/semua">Belanja dengan harga reseller</a>'
         : adminPreviewMode
           ? '<span class="reseller-active-label">Tombol pembelian nonaktif dalam pratinjau.</span>'
           : currentUser
-            ? '<button class="button button-primary" type="button" data-buy-reseller-plan>Lanjutkan dengan paket</button>'
+            ? '<button class="button button-primary" type="button" data-buy-reseller-plan>Buka akses semua produk</button>'
             : '<a class="button button-primary" href="#/masuk?next=%2Fprogram-reseller">Masuk untuk melanjutkan</a>';
       return `<nav class="breadcrumbs" aria-label="Breadcrumb"><a href="#/">Beranda</a><span aria-hidden="true">›</span><span>Program reseller</span></nav>
-        <section class="page-panel reseller-program-page"><div class="page-heading"><span class="reseller-page-eyebrow">PROGRAM RESELLER</span><h1>Harga khusus untuk jualan ulang</h1><p>Pilih produk yang ingin kamu stok, atau buka harga reseller di seluruh katalog.</p></div>
-          <div class="reseller-path-grid">
-            <article class="reseller-path-card reseller-bulk-card"><div class="reseller-path-top"><span class="reseller-path-index">01</span><span class="reseller-path-label">Akses per produk</span></div><h2>Mulai dari produk pilihan</h2><p>Penuhi minimum dalam satu pesanan. Harga khusus produk itu aktif setelah pembayaran diverifikasi.</p>${bulkSelector}<small class="reseller-path-note">Jumlah yang dipilih dibawa ke halaman produk agar bisa kamu tinjau sebelum masuk keranjang.</small></article>
-            <article class="reseller-path-card reseller-plan-card"><div class="reseller-path-top"><span class="reseller-path-index">02</span><span class="reseller-path-label">Akses seluruh katalog</span></div><h2>Buka semua harga reseller</h2><div class="reseller-plan-price"><small>Satu kali bayar</small><strong>${rupiah(price)}</strong></div><p>${escapeHtml(STOREFRONT.resellerPlan?.terms || 'Akses berlaku permanen setelah pesanan dibayar dan diverifikasi.')}</p>${planAction}</article>
+        <section class="page-panel reseller-program-page"><div class="page-heading"><span class="reseller-page-eyebrow">PROGRAM RESELLER</span><h1>Harga khusus untuk jualan ulang</h1><p>Mulai dari produk yang paling kamu butuhkan. Akses seluruh katalog tersedia dalam satu pembelian.</p></div>
+          <div class="reseller-access-layout">
+            <section class="reseller-bulk-panel" aria-labelledby="reseller-bulk-heading"><div class="reseller-panel-heading"><span class="reseller-panel-icon">${feather('package')}</span><div><span class="reseller-path-label">AKSES PER PRODUK</span><h2 id="reseller-bulk-heading">Mulai dari minimum produk</h2><p>Pilih jumlah untuk satu produk. Harga khusus produk tersebut aktif setelah pesanan dibayar dan diverifikasi.</p></div></div>${bulkSelector}</section>
+            <aside class="reseller-catalog-offer"><div class="reseller-offer-heading"><span class="reseller-path-label">AKSES SELURUH KATALOG</span><span class="reseller-once-badge">Sekali bayar</span></div><h2>Satu akses untuk semua produk</h2><p>${escapeHtml(STOREFRONT.resellerPlan?.terms || 'Akses harga reseller berlaku permanen setelah pesanan dibayar dan diverifikasi.')}</p><div class="reseller-offer-price"><strong>${rupiah(price)}</strong><span>sekali</span></div>${planAction}</aside>
           </div>
-          <section class="reseller-steps"><h2>Cara kerjanya</h2><ol><li><span>1</span><div><strong>Pilih jalur akses</strong><small>Per produk atau untuk seluruh katalog.</small></div></li><li><span>2</span><div><strong>Konfirmasi pesanan</strong><small>Rincian tersimpan di menu Pesanan sebelum tahap pembayaran.</small></div></li><li><span>3</span><div><strong>Harga khusus aktif</strong><small>Akses dibuka setelah pembayaran terverifikasi.</small></div></li></ol></section>
-          <div class="reseller-faq-link"><span>Butuh penjelasan soal minimum pembelian atau akses harga?</span><a class="text-link" href="#/faq">Buka FAQ ${feather('arrow-right')}</a></div>
+          <div class="reseller-program-footnote"><p><span class="reseller-result-icon">${feather('check')}</span><span><strong>Akses aktif setelah pembayaran terverifikasi</strong><small>Pembelian produk membuka harga khusus untuk produk tersebut. Paket membuka harga reseller seluruh katalog.</small></span></p><a class="text-link" href="#/faq">Pertanyaan tentang reseller ${feather('arrow-right')}</a></div>
         </section>`;
     }
     if (path === '/promo') {
@@ -981,6 +992,66 @@
     return `<div class="admin-image-field admin-wide"><span class="admin-field-label">${escapeHtml(label)}</span><div class="admin-image-upload"><input data-image-target type="hidden" value="${escapeHtml(value)}" /><div class="admin-upload-preview" data-image-preview>${value ? `<img src="${escapeHtml(value)}" alt="Pratinjau ${escapeHtml(label.toLocaleLowerCase('id-ID'))}" />` : `<span>${feather('image')}<small>Pratinjau gambar</small></span>`}</div><div class="admin-upload-controls"><button class="button admin-upload-button" type="button" data-trigger-file>${feather('upload')}<span>Pilih gambar</span></button><input class="custom-file-input" type="file" accept="image/png,image/jpeg,image/webp" data-image-upload aria-label="Pilih ${escapeHtml(label.toLocaleLowerCase('id-ID'))}" /><span class="admin-upload-name" data-image-name>${escapeHtml(filename)}</span><small>PNG, JPEG, atau WebP · maks. 5 MB</small></div></div></div>`;
   }
 
+  function specificationOptionField(option = {}, index = 0, onlyOption = false) {
+    return `<div class="admin-specification-option" data-specification-option><input type="hidden" data-option-value value="${escapeHtml(option.value || '')}" /><label>Nama opsi<input data-option-label value="${escapeHtml(option.label || '')}" required maxlength="100" placeholder="Contoh: 1 bulan" /></label><label>Penyesuaian harga (Rp)<input data-option-adjustment type="number" step="1" value="${Number(option.priceAdjustment) || 0}" /><small>Isi 0 untuk harga normal, angka minus untuk potongan.</small></label><button class="button button-small admin-spec-remove-option" type="button" data-remove-specification-option aria-label="Hapus opsi ${index + 1}" ${onlyOption ? 'disabled' : ''}>Hapus</button></div>`;
+  }
+
+  function specificationField(specification = {}, index = 0) {
+    const options = Array.isArray(specification.options) && specification.options.length ? specification.options : [{ value: '', label: '', priceAdjustment: 0 }];
+    return `<fieldset class="admin-specification-row" data-specification-row><legend data-specification-legend>Spesifikasi ${index + 1}</legend><input type="hidden" data-specification-id value="${escapeHtml(specification.id || '')}" /><div class="admin-specification-head"><label>Nama pilihan<input data-specification-name value="${escapeHtml(specification.name || '')}" required maxlength="80" placeholder="Contoh: Durasi" /></label><label class="admin-specification-required"><input type="checkbox" data-specification-required ${specification.required === false ? '' : 'checked'} /><span>Wajib dipilih</span></label><button class="button button-small admin-spec-remove" type="button" data-remove-specification>Hapus pilihan</button></div><div class="admin-specification-options" data-specification-options>${options.map((option, optionIndex) => specificationOptionField(option, optionIndex, options.length === 1)).join('')}</div><button class="button button-small admin-spec-add-option" type="button" data-add-specification-option>Tambah opsi</button></fieldset>`;
+  }
+
+  function specificationEditor(product) {
+    const specifications = Array.isArray(product.specifications) ? product.specifications : [];
+    return `<section class="admin-specification-editor admin-wide" data-specification-editor><div class="admin-specification-editor-heading"><div><span class="admin-field-label">Spesifikasi dan varian</span><p>Tentukan pilihan yang akan dilihat pembeli. Harga tiap opsi mengikuti harga produk dan penyesuaiannya.</p></div><button class="button button-small" type="button" data-add-specification>Tambah pilihan</button></div><p class="admin-specification-empty" data-no-specifications ${specifications.length ? 'hidden' : ''}>Belum ada pilihan tambahan untuk produk ini.</p><div class="admin-specification-list" data-specification-list>${specifications.map((specification, index) => specificationField(specification, index)).join('')}</div></section>`;
+  }
+
+  function uniqueSpecificationKey(label, used, limit) {
+    const base = String(label || '').normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLocaleLowerCase('en-US').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, limit).replace(/-+$/g, '') || 'pilihan';
+    let candidate = base;
+    let suffix = 2;
+    while (used.has(candidate)) {
+      const ending = `-${suffix++}`;
+      candidate = `${base.slice(0, Math.max(1, limit - ending.length)).replace(/-+$/g, '')}${ending}`;
+    }
+    used.add(candidate);
+    return candidate;
+  }
+
+  function specificationsFromEditor(form) {
+    const rows = [...form.querySelectorAll('[data-specification-row]')];
+    if (rows.length > 8) throw new Error('Satu produk dapat memiliki maksimal 8 spesifikasi.');
+    const usedIds = new Set();
+    return rows.map((row) => {
+      const name = row.querySelector('[data-specification-name]')?.value.trim() || '';
+      if (!name) throw new Error('Isi nama setiap spesifikasi produk.');
+      const storedId = row.querySelector('[data-specification-id]')?.value || '';
+      const id = /^[a-z0-9-]{1,48}$/.test(storedId) && !usedIds.has(storedId)
+        ? (usedIds.add(storedId), storedId)
+        : uniqueSpecificationKey(name, usedIds, 48);
+      const optionRows = [...row.querySelectorAll('[data-specification-option]')];
+      if (!optionRows.length || optionRows.length > 30) throw new Error(`Tambahkan 1–30 opsi untuk ${name}.`);
+      const usedValues = new Set();
+      const labels = new Set();
+      const options = optionRows.map((optionRow) => {
+        const label = optionRow.querySelector('[data-option-label]')?.value.trim() || '';
+        if (!label) throw new Error(`Isi nama semua opsi pada ${name}.`);
+        const normalizedLabel = label.toLocaleLowerCase('id-ID');
+        if (labels.has(normalizedLabel)) throw new Error(`Opsi pada ${name} tidak boleh memiliki nama yang sama.`);
+        labels.add(normalizedLabel);
+        const storedValue = optionRow.querySelector('[data-option-value]')?.value || '';
+        const value = /^[a-z0-9-]{1,64}$/.test(storedValue) && !usedValues.has(storedValue)
+          ? (usedValues.add(storedValue), storedValue)
+          : uniqueSpecificationKey(label, usedValues, 64);
+        const rawAdjustment = optionRow.querySelector('[data-option-adjustment]')?.value ?? '0';
+        const priceAdjustment = rawAdjustment === '' ? 0 : Number(rawAdjustment);
+        if (!Number.isSafeInteger(priceAdjustment)) throw new Error(`Penyesuaian harga untuk ${label} harus berupa bilangan bulat.`);
+        return { value, label, priceAdjustment };
+      });
+      return { id, name, required: Boolean(row.querySelector('[data-specification-required]')?.checked), options };
+    });
+  }
+
   function productFields(product, isNew = false) {
     const termsText = Object.entries(product.terms || {}).map(([label,value]) => `${label}: ${value}`).join('\n');
     const categories = CATEGORIES.map((category) => ({ value: category.slug, label: category.name }));
@@ -999,7 +1070,7 @@
         <div class="admin-field"><span class="admin-field-label">Status pesanan</span>${customDropdown('orderMode', 'Status pesanan', [{ value: 'ready', label: 'Bisa dipesan' }, { value: 'preorder', label: 'Pre-order' }], product.orderMode || 'ready', 'admin-dropdown')}</div>
         <label class="admin-wide">Deskripsi<textarea name="description" rows="3" maxlength="2400" required>${escapeHtml(product.description || '')}</textarea></label>
         <label class="admin-wide">Ketentuan produk<textarea name="terms" rows="5" spellcheck="false">${escapeHtml(termsText)}</textarea><small>Satu ketentuan per baris, format: Nama: keterangan.</small></label>
-        <label class="admin-wide">Spesifikasi dan varian<textarea name="specificationsJson" rows="8" spellcheck="false">${escapeHtml(JSON.stringify(product.specifications || [], null, 2))}</textarea><small>Atur pilihan per produk dalam JSON. Contoh: [{"id":"durasi","name":"Durasi","required":true,"options":[{"value":"1-bulan","label":"1 bulan","priceAdjustment":0},{"value":"3-bulan","label":"3 bulan","priceAdjustment":80000}]}]. Penyesuaian harga ditambahkan ke harga retail atau reseller.</small></label>
+        ${specificationEditor(product)}
         ${imageUploadField('Gambar produk', product.image || '')}
         <label class="admin-confirm-stock"><input name="preOrderConfirmed" type="checkbox" ${product.preOrderConfirmed ? 'checked' : ''} /><span><strong>Stok pre-order sudah dikonfirmasi</strong><small>Pemesanan dibuka setelah stok dipastikan.</small></span></label>
       </div><p class="admin-form-message" data-admin-message role="status" aria-live="polite"></p><div class="admin-form-actions"><button class="button button-primary" type="submit">${isNew ? 'Tambah produk' : 'Simpan perubahan'}</button>${isNew ? '' : `<button class="button button-danger" type="button" data-delete-product="${escapeHtml(product.id)}">Hapus produk</button>`}</div>
@@ -1052,8 +1123,10 @@
     const link = (href, label, icon, active, child = false) => `<a class="admin-nav-link${child ? ' admin-nav-child' : ''}" data-admin-nav href="${href}" aria-label="${label}" ${active ? 'aria-current="page"' : ''} title="${collapsed ? label : ''}"><span class="admin-nav-icon">${feather(icon)}</span><span class="admin-nav-label">${label}</span></a>`;
     const catalogActive = path.startsWith('/admin/produk') || path.startsWith('/admin/katalog/');
     const storeActive = path.startsWith('/admin/toko/');
+    const salesActive = path === '/admin/pesanan' || path === '/admin/analisa';
     const catalogHidden = collapsed || !catalogActive;
     const storeHidden = collapsed || !storeActive;
+    const salesHidden = collapsed || !salesActive;
     return `${link('#/admin', 'Ringkasan', 'home', path === '/admin')}
       <section class="admin-nav-group ${catalogActive ? 'is-active' : ''}" data-admin-nav-group>
         <button class="admin-nav-parent" type="button" data-admin-group-toggle aria-expanded="${!catalogHidden}" title="${collapsed ? 'Katalog' : ''}"><span class="admin-nav-icon">${feather('grid')}</span><span class="admin-nav-label">Katalog</span>${feather('chevron-right','admin-nav-chevron')}</button>
@@ -1070,8 +1143,13 @@
           ${link('#/admin/toko/reseller', 'Program reseller', 'user', path === '/admin/toko/reseller', true)}
         </div>
       </section>
-      ${link('#/admin/pesanan', 'Pesanan', 'shopping-cart', path === '/admin/pesanan')}
-      ${link('#/admin/analisa', 'Analisa', 'grid', path === '/admin/analisa')}`;
+      <section class="admin-nav-group ${salesActive ? 'is-active' : ''}" data-admin-nav-group>
+        <button class="admin-nav-parent" type="button" data-admin-group-toggle aria-expanded="${!salesHidden}" title="${collapsed ? 'Penjualan' : ''}"><span class="admin-nav-icon">${feather('shopping-cart')}</span><span class="admin-nav-label">Penjualan</span>${feather('chevron-right','admin-nav-chevron')}</button>
+        <div class="admin-nav-children" data-admin-group-children ${salesHidden ? 'hidden' : ''}>
+          ${link('#/admin/pesanan', 'Pesanan', 'shopping-cart', path === '/admin/pesanan', true)}
+          ${link('#/admin/analisa', 'Analisa', 'grid', path === '/admin/analisa', true)}
+        </div>
+      </section>`;
   }
 
   function adminOrderCard(order) {
@@ -1238,8 +1316,71 @@
     }
   }
 
+  function bindProductSpecificationEditor() {
+    const editor = app.querySelector('[data-specification-editor]');
+    const list = editor?.querySelector('[data-specification-list]');
+    const empty = editor?.querySelector('[data-no-specifications]');
+    const addSpecification = editor?.querySelector('[data-add-specification]');
+    if (!editor || !list || !addSpecification) return;
+
+    const refresh = () => {
+      const rows = [...list.querySelectorAll('[data-specification-row]')];
+      rows.forEach((row, rowIndex) => {
+        const legend = row.querySelector('[data-specification-legend]');
+        if (legend) legend.textContent = `Spesifikasi ${rowIndex + 1}`;
+        const options = [...row.querySelectorAll('[data-specification-option]')];
+        options.forEach((option, optionIndex) => {
+          const remove = option.querySelector('[data-remove-specification-option]');
+          if (remove) {
+            remove.disabled = options.length === 1;
+            remove.setAttribute('aria-label', `Hapus opsi ${optionIndex + 1}`);
+          }
+        });
+        const addOption = row.querySelector('[data-add-specification-option]');
+        if (addOption) addOption.disabled = options.length >= 30;
+      });
+      addSpecification.disabled = rows.length >= 8;
+      addSpecification.title = rows.length >= 8 ? 'Maksimal 8 spesifikasi per produk' : '';
+      if (empty) empty.hidden = rows.length > 0;
+    };
+
+    addSpecification.addEventListener('click', () => {
+      const rows = list.querySelectorAll('[data-specification-row]');
+      if (rows.length >= 8) return;
+      list.insertAdjacentHTML('beforeend', specificationField({}, rows.length));
+      refresh();
+      list.querySelector('[data-specification-row]:last-of-type [data-specification-name]')?.focus();
+    });
+
+    list.addEventListener('click', (event) => {
+      const removeSpecification = event.target.closest('[data-remove-specification]');
+      if (removeSpecification) {
+        removeSpecification.closest('[data-specification-row]')?.remove();
+        refresh();
+        return;
+      }
+      const addOption = event.target.closest('[data-add-specification-option]');
+      if (addOption) {
+        const options = addOption.closest('[data-specification-row]')?.querySelector('[data-specification-options]');
+        if (!options || options.children.length >= 30) return;
+        options.insertAdjacentHTML('beforeend', specificationOptionField({}, options.children.length));
+        refresh();
+        options.querySelector('[data-specification-option]:last-of-type [data-option-label]')?.focus();
+        return;
+      }
+      const removeOption = event.target.closest('[data-remove-specification-option]');
+      if (removeOption) {
+        const options = removeOption.closest('[data-specification-options]');
+        if (options?.children.length > 1) removeOption.closest('[data-specification-option]')?.remove();
+        refresh();
+      }
+    });
+    refresh();
+  }
+
   function bindAdminEvents() {
     bindCustomDropdowns();
+    bindProductSpecificationEditor();
     const shell = app.querySelector('[data-admin-shell]');
     const collapseButton = app.querySelector('[data-admin-collapse]');
     const menuToggle = app.querySelector('[data-admin-menu-toggle]');
@@ -1371,16 +1512,14 @@
       if (product.orderMode === 'ready') product.preOrderConfirmed = true;
       product.terms = termsFromTextarea(product.terms || '');
       try {
-        const specificationsText = String(fields.get('specificationsJson') || '').trim();
-        product.specifications = specificationsText ? JSON.parse(specificationsText) : [];
-        delete product.specificationsJson;
+        product.specifications = specificationsFromEditor(form);
         const result = await requestApi(isCreate ? '/api/admin/products' : `/api/admin/products/${encodeURIComponent(product.id)}`, { method: isCreate ? 'POST' : 'PUT', body: { product } });
         PRODUCTS = isCreate ? [...PRODUCTS, result.product] : PRODUCTS.map((item) => item.id === result.product.id ? result.product : item);
         if (result.product.orderMode === 'preorder' && !result.product.preOrderConfirmed) writeCart(cart.filter((item) => item.id !== result.product.id));
         showToast(isCreate ? 'Produk berhasil ditambahkan.' : 'Perubahan produk tersimpan.');
         await render();
       } catch (error) {
-        message.textContent = error instanceof SyntaxError ? 'Format spesifikasi harus berupa JSON yang valid.' : error.message;
+        message.textContent = error.message;
         message.classList.add('is-error');
       }
     }));
@@ -1840,22 +1979,47 @@
     const bulkProductLink = app.querySelector('[data-bulk-product-link]');
     const updateBulkCalculator = () => {
       if (!bulkProduct || !bulkQuantity || !bulkResult) return;
-      const minimum = Number(bulkProduct.dataset.minimum) || 0;
-      const quantity = Math.max(0, Math.min(99, Number(bulkQuantity.value) || 0));
-      bulkQuantity.min = String(minimum || 1);
+      const minimum = Math.max(1, Number(bulkProduct.dataset.minimum) || 1);
       const selectedProduct = PRODUCTS.find((product) => product.id === bulkProduct.value);
+      const available = selectedProduct?.stockAvailable === null || selectedProduct?.stockAvailable === undefined
+        ? 99
+        : Math.max(0, Math.floor(Number(selectedProduct.stockAvailable) || 0));
+      const maxQuantity = Math.min(99, available);
+      const stockCanMeetMinimum = available >= minimum;
+      const enteredQuantity = Number(bulkQuantity.value);
+      const quantity = Number.isFinite(enteredQuantity) && enteredQuantity > 0 ? Math.floor(enteredQuantity) : 0;
+      bulkQuantity.min = String(minimum || 1);
+      bulkQuantity.max = String(Math.max(1, maxQuantity));
+      bulkQuantity.disabled = !stockCanMeetMinimum;
+      const ready = stockCanMeetMinimum && quantity >= minimum && quantity <= maxQuantity;
+      const resultIcon = app.querySelector('.reseller-result-icon');
+      if (resultIcon) {
+        resultIcon.innerHTML = feather(ready ? 'check' : 'alert-circle');
+        resultIcon.classList.toggle('is-unavailable', !ready);
+      }
       if (bulkProductLink && selectedProduct) {
         bulkProductLink.href = `#/produk/${encodeURIComponent(selectedProduct.slug)}?bulk=1&qty=${quantity}`;
-        bulkProductLink.setAttribute('aria-disabled', String(quantity < minimum));
-        bulkProductLink.classList.toggle('is-disabled', quantity < minimum);
+        bulkProductLink.setAttribute('aria-disabled', String(!ready));
+        bulkProductLink.classList.toggle('is-disabled', !ready);
+        bulkProductLink.textContent = !stockCanMeetMinimum ? 'Stok belum cukup' : quantity > maxQuantity ? 'Jumlah melebihi stok' : 'Lanjut pilih produk';
       }
-      bulkResult.textContent = quantity >= minimum
-        ? `${selectedProduct?.name || 'Produk'}: ${quantity} unit, memenuhi minimum ${minimum}. Akses harga khusus aktif setelah pembayaran diverifikasi.`
-        : `Minimum ${minimum} unit untuk ${selectedProduct?.name || 'produk ini'}; tambah ${minimum - quantity} unit lagi.`;
+      if (!stockCanMeetMinimum) {
+        bulkResult.textContent = `${selectedProduct?.name || 'Produk'} memiliki stok ${available} unit; minimum pembelian ${minimum} unit belum bisa dipenuhi.`;
+      } else if (quantity > maxQuantity) {
+        bulkResult.textContent = `Stok ${selectedProduct?.name || 'produk ini'} tersisa ${available} unit. Kurangi jumlah pesanan.`;
+      } else if (quantity >= minimum) {
+        bulkResult.textContent = `${selectedProduct?.name || 'Produk'}: ${quantity} unit. Akses harga khusus aktif setelah pembayaran diverifikasi.`;
+      } else {
+        bulkResult.textContent = `Minimum ${minimum} unit untuk ${selectedProduct?.name || 'produk ini'}; tambah ${minimum - quantity} unit lagi.`;
+      }
     };
     bulkProduct?.addEventListener('change', () => {
       const minimum = Number(bulkProduct.dataset.minimum) || 1;
-      if (Number(bulkQuantity?.value) < minimum && bulkQuantity) bulkQuantity.value = String(minimum);
+      const selectedProduct = PRODUCTS.find((product) => product.id === bulkProduct.value);
+      const available = selectedProduct?.stockAvailable === null || selectedProduct?.stockAvailable === undefined
+        ? 99
+        : Math.max(0, Math.floor(Number(selectedProduct.stockAvailable) || 0));
+      if (bulkQuantity) bulkQuantity.value = String(available < minimum ? available : minimum);
       updateBulkCalculator();
     });
     bulkQuantity?.addEventListener('input', updateBulkCalculator);
@@ -1896,7 +2060,8 @@
       }
       const dialog = document.createElement('dialog');
       dialog.className = 'product-purchase-dialog';
-      dialog.innerHTML = purchaseDialogMarkup(product, button.dataset.purchaseMode, button.dataset.defaultQuantity || 1);
+      const minimumQuantity = Math.max(1, Number(button.dataset.minimumQuantity) || 1);
+      dialog.innerHTML = purchaseDialogMarkup(product, button.dataset.purchaseMode, button.dataset.defaultQuantity || minimumQuantity, minimumQuantity);
       app.append(dialog);
       const form = dialog.querySelector('[data-purchase-form]');
       const quantityField = dialog.querySelector('[data-purchase-quantity]');
@@ -1905,13 +2070,17 @@
       const selectedSpecifications = () => Object.fromEntries([...dialog.querySelectorAll('[data-purchase-specification]')].map((field) => [field.dataset.purchaseSpecification, field.value]).filter(([, value]) => value));
       const updatePreview = () => {
         const resolved = resolveClientSpecifications(product, selectedSpecifications());
+        const quantity = Number(quantityField?.value);
+        const stockLimit = product.stockAvailable === null || product.stockAvailable === undefined ? 99 : Math.max(0, Number(product.stockAvailable));
+        const quantityValid = Number.isInteger(quantity) && quantity >= minimumQuantity && quantity <= 99 && quantity <= stockLimit;
         const price = dialog.querySelector('[data-purchase-price]');
         if (price) price.textContent = resolved ? rupiah(resolved.unitPrice) : 'Pilih spesifikasi';
-        if (submitButton) submitButton.disabled = !resolved;
+        if (submitButton) submitButton.disabled = !resolved || !quantityValid;
       };
       dialog.querySelectorAll('[data-purchase-specification]').forEach((field) => field.addEventListener('change', updatePreview));
       quantityField?.addEventListener('input', () => {
         if (errorMessage) { errorMessage.hidden = true; errorMessage.textContent = ''; }
+        updatePreview();
       });
       dialog.querySelectorAll('[data-close-purchase]').forEach((closeButton) => closeButton.addEventListener('click', () => dialog.close()));
       dialog.addEventListener('click', (event) => { if (event.target === dialog) dialog.close(); });
@@ -1923,6 +2092,10 @@
         if (!selection) { form.reportValidity(); return; }
         if (!Number.isInteger(quantity) || quantity < 1 || quantity > 99) {
           if (errorMessage) { errorMessage.hidden = false; errorMessage.textContent = 'Jumlah harus antara 1 dan 99.'; }
+          return;
+        }
+        if (quantity < minimumQuantity) {
+          if (errorMessage) { errorMessage.hidden = false; errorMessage.textContent = `Minimum pembelian ${minimumQuantity} unit.`; }
           return;
         }
         if (product.stockAvailable !== null && product.stockAvailable !== undefined && quantity > Number(product.stockAvailable)) {

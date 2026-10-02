@@ -337,6 +337,52 @@ test('admin can create, update, and delete a catalog product', async () => {
   assert.equal(deleted.data.deleted, 'bulk-item');
 });
 
+test('admin-configured product variants control storefront choices and server-side order prices', async () => {
+  const product = {
+    id: 'variant-item', slug: 'variant-item', name: 'Variant Item', category: 'ai', price: 10000,
+    resellerPrice: null, bulkMinimum: null, duration: 'Akses digital', fulfillment: 'Aktivasi digital',
+    description: 'Produk untuk menguji spesifikasi terkelola.', terms: {}, sold: 0, rating: 0,
+    createdAt: '2026-09-29', orderMode: 'ready', preOrderConfirmed: true, image: '',
+    specifications: [{
+      id: 'durasi', name: 'Durasi', required: true,
+      options: [
+        { value: '1-bulan', label: '1 bulan', priceAdjustment: 0 },
+        { value: '3-bulan', label: '3 bulan', priceAdjustment: 5000 },
+      ],
+    }],
+  };
+  const created = await request('/api/admin/products', { method: 'POST', cookie: adminCookie, body: { product } });
+  assert.equal(created.response.status, 201);
+
+  const catalog = await request('/api/products');
+  const storefrontProduct = catalog.data.products.find((entry) => entry.id === product.id);
+  assert.deepEqual(storefrontProduct.specifications, product.specifications);
+  assert.equal('resellerPrice' in storefrontProduct, false);
+
+  const registration = await request('/api/auth/register', {
+    method: 'POST', body: { name: 'Variant Buyer', email: 'variant-buyer@example.test', password: 'BuyerPass123!' },
+  });
+  const buyerCookie = cookieFrom(registration.response);
+  const missingChoice = await request('/api/orders', {
+    method: 'POST', cookie: buyerCookie, body: { items: [{ id: product.id, quantity: 2 }] },
+  });
+  assert.equal(missingChoice.response.status, 400);
+  const invalidChoice = await request('/api/orders', {
+    method: 'POST', cookie: buyerCookie, body: { items: [{ id: product.id, quantity: 2, specifications: { durasi: '12-bulan' } }] },
+  });
+  assert.equal(invalidChoice.response.status, 400);
+
+  const order = await request('/api/orders', {
+    method: 'POST', cookie: buyerCookie,
+    body: { items: [{ id: product.id, quantity: 2, specifications: { durasi: '3-bulan' } }] },
+  });
+  assert.equal(order.response.status, 201);
+  assert.equal(order.data.order.total, 30000);
+  assert.deepEqual(order.data.order.items[0].specifications, [
+    { id: 'durasi', name: 'Durasi', value: '3-bulan', label: '3 bulan' },
+  ]);
+});
+
 test('admin bulk actions archive, restore, and delete selected products', async () => {
   const products = ['bulk-alpha', 'bulk-beta'].map((id) => ({
     id, slug: id, name: `Produk ${id}`, category: 'ai', price: 12000,
