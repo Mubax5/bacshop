@@ -33,4 +33,15 @@ describe("serializable database transaction boundary", () => {
     expect(isTransactionConflict({ code: "P2002" })).toBe(false);
     expect(isTransactionConflict(null)).toBe(false);
   });
+
+  it("retries the Prisma raw-query adapter conflict observed in CI", async () => {
+    const error = { code: "P2010", meta: { driverAdapterError: { cause: { originalCode: "40001", kind: "TransactionWriteConflict" } } } };
+    const transaction = vi.fn().mockRejectedValueOnce(error).mockResolvedValueOnce("saved");
+    expect(await serializableTransaction({ $transaction: transaction } as unknown as PrismaClient, async () => "saved", { pause: async () => {} })).toBe("saved");
+    expect(transaction).toHaveBeenCalledTimes(2);
+    expect(isTransactionConflict({ code: "P2010", meta: { code: "40P01" } })).toBe(true);
+    expect(isTransactionConflict({ code: "P2010", meta: { driverAdapterError: { cause: { originalCode: "23505" } } } })).toBe(false);
+    expect(isTransactionConflict({ code: "P2010", meta: { message: "40001 TransactionWriteConflict" } })).toBe(false);
+    expect(isTransactionConflict({ code: "P2002", meta: { code: "40001" } })).toBe(false);
+  });
 });

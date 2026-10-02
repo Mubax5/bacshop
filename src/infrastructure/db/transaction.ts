@@ -5,8 +5,21 @@ type TransactionDatabase = Pick<PrismaClient, "$transaction">;
 
 export function isTransactionConflict(error: unknown): boolean {
   if (!error || typeof error !== "object") return false;
-  const candidate = error as { code?: unknown; cause?: unknown };
-  return candidate.code === "P2034" || candidate.code === "40001" || candidate.code === "40P01";
+  const candidate = error as { code?: unknown; meta?: unknown };
+  if (candidate.code === "P2034" || retryableSqlState(candidate.code)) return true;
+  // Prisma raw queries wrap adapter SQLSTATEs in P2010, unlike model writes.
+  // Retry only explicit serialization/deadlock codes, never arbitrary raw errors.
+  if (candidate.code !== "P2010" || !candidate.meta || typeof candidate.meta !== "object") return false;
+  const meta = candidate.meta as { code?: unknown; driverAdapterError?: unknown };
+  if (retryableSqlState(meta.code)) return true;
+  if (!meta.driverAdapterError || typeof meta.driverAdapterError !== "object") return false;
+  const adapter = meta.driverAdapterError as { cause?: unknown };
+  if (!adapter.cause || typeof adapter.cause !== "object") return false;
+  return retryableSqlState((adapter.cause as { originalCode?: unknown }).originalCode);
+}
+
+function retryableSqlState(code: unknown): boolean {
+  return code === "40001" || code === "40P01";
 }
 
 /** Retry only DB serialization conflicts. Provider requests must run outside this callback. */
