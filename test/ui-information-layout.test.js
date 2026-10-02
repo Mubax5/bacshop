@@ -14,32 +14,48 @@ function between(start, end) {
   return app.slice(from, to);
 }
 
-test('FAQ stays searchable and reseller access paths have a clear primary order flow', () => {
+test('reseller program uses the FAQ layout and sends shopping into the catalog', () => {
   const faq = between('function renderFaq()', 'function renderAuthPage(');
   const reseller = between("if (path === '/program-reseller')", "if (path === '/promo')");
   assert.match(faq, /class="info-layout info-layout-faq"/);
   assert.match(faq, /class="info-side-rail faq-side-rail"/);
   assert.match(faq, /data-faq-search/);
   assert.match(faq, /data-faq-topic/);
-  assert.match(reseller, /class="page-panel reseller-program-page"/);
-  assert.match(reseller, /class="reseller-access-layout"/);
-  assert.match(reseller, /class="reseller-bulk-panel"/);
-  assert.match(reseller, /class="reseller-catalog-offer"/);
-  assert.match(reseller, /data-bulk-product-link/);
-  assert.match(reseller, /class="reseller-program-footnote"/);
-  assert.doesNotMatch(reseller, /reseller-choice-tabs|reseller-choice-panel|reseller-steps|reseller-path-grid/);
-  assert.match(reseller, /firstBulkUnavailable/);
-  assert.match(reseller, /stockAvailable/);
-  assert.match(app, /bulkQuantity\.disabled = !stockCanMeetMinimum/);
-  assert.match(app, /quantity <= maxQuantity/);
-  const shell = between('function shell(content, path)', 'function setCartQuantity(');
-  assert.match(shell, /data-minimum-quantity="\$\{detailBulkMinimum\}"/);
-  assert.match(shell, /data-default-quantity="\$\{detailBulkMinimum\}"/);
-  const purchaseDialog = between('function purchaseDialogMarkup(', 'function categoryLinks(');
-  assert.match(purchaseDialog, /min="\$\{minimum\}"/);
-  assert.match(app, /quantity < minimumQuantity/);
-  assert.match(styles, /\.reseller-access-layout\s*\{[^}]*grid-template-columns:\s*minmax\(0,1\.35fr\)/s);
-  assert.match(styles, /\.reseller-program-footnote\s*\{[^}]*border-top/s);
+  assert.match(reseller, /class="info-layout info-layout-faq info-layout-reseller"/);
+  assert.match(reseller, /class="info-side-rail faq-side-rail"/);
+  assert.match(reseller, /class="faq-list reseller-info-list"/);
+  assert.match(reseller, /Harga khusus tampil langsung di katalog/);
+  assert.match(reseller, /href="#\/kategori\/semua">Buka katalog/);
+  assert.match(reseller, /visibleResellerProduct/);
+  assert.match(reseller, /Aktifkan akses katalog/);
+  assert.doesNotMatch(reseller, /data-bulk-product|data-bulk-quantity|Pilih jumlah untuk satu produk/);
+  assert.match(styles, /\.info-layout-reseller \.faq-side-rail/);
+});
+
+test('product specifications and quantity are selected inline before buy or cart actions', () => {
+  const detail = between('function renderDetail(', 'function notFound(');
+  assert.match(detail, /data-detail-purchase/);
+  assert.match(detail, /data-detail-specification/);
+  assert.match(detail, /data-detail-quantity/);
+  assert.match(detail, /data-purchase-action="buy"/);
+  assert.match(detail, /data-purchase-action="cart"/);
+  assert.match(detail, /data-detail-total/);
+  assert.match(app, /const detailPurchaseForm = app\.querySelector\('\[data-detail-purchase\]'\)/);
+  assert.match(app, /writeCheckoutOverride\(\[item\]\)/);
+  assert.match(app, /addToCart\(item\.id, item\.quantity, item\.specifications\)/);
+  assert.doesNotMatch(detail, /<dialog|data-purchase-open/);
+  assert.doesNotMatch(app, /function purchaseDialogMarkup\(/);
+  assert.match(styles, /\.product-detail-page \.detail-layout\s*\{[^}]*grid-template-columns:/s);
+});
+
+test('checkout reviews products and creates QRIS after confirmation without payment-method choices', () => {
+  const checkout = between('function renderCheckoutPage()', 'function safeReturnPath(');
+  assert.match(checkout, /Akun penerima/);
+  assert.match(checkout, /checkout-item-thumb/);
+  assert.match(checkout, /data-confirm-order/);
+  assert.match(checkout, /QRIS untuk pembayaran dibuat setelah/);
+  assert.doesNotMatch(checkout, /Pilih pembayaran|payment-method|radio/);
+  assert.match(app, /data-create-qris/);
 });
 
 test('admin pages are grouped by catalog, store content, and sales', () => {

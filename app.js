@@ -325,7 +325,7 @@
       <div class="mobile-search-row">${headerSearch('mobile', query)}</div>
     </header>
     <main class="page-container" id="main" tabindex="-1">${content}</main>
-    ${detailProduct ? `<div class="mobile-purchase"><div><small>${detailProduct.priceContext === 'reseller' ? 'Harga reseller' : 'Harga retail'}</small><strong>${rupiah(detailProduct.price)}</strong></div>${adminPreviewMode ? '<span class="button button-disabled" aria-disabled="true">Mode pratinjau</span>' : detailBulkStockBlocked ? `<span class="button button-disabled" aria-disabled="true">Stok belum cukup untuk minimum ${detailBulkMinimum}</span>` : detailProduct.stockAvailable === 0 ? '<span class="button button-disabled" aria-disabled="true">Stok habis</span>' : detailProduct.orderMode === 'preorder' && !detailProduct.preOrderConfirmed ? `<span class="button button-disabled" aria-disabled="true">Stok dikonfirmasi sebelum pesan</span>` : `<button class="button button-primary" type="button" data-purchase-open="${detailProduct.id}" data-purchase-mode="buy" data-default-quantity="${detailBulkMinimum}" data-minimum-quantity="${detailBulkMinimum}">Beli sekarang</button>`}</div>` : ''}
+    ${detailProduct ? `<div class="mobile-purchase"><div><small>${detailProduct.priceContext === 'reseller' ? 'Harga reseller' : 'Harga retail'}</small><strong>${rupiah(detailProduct.price)}</strong></div>${adminPreviewMode ? '<span class="button button-disabled" aria-disabled="true">Mode pratinjau</span>' : detailBulkStockBlocked ? `<span class="button button-disabled" aria-disabled="true">Stok belum cukup untuk minimum ${detailBulkMinimum}</span>` : detailProduct.stockAvailable === 0 ? '<span class="button button-disabled" aria-disabled="true">Stok habis</span>' : detailProduct.orderMode === 'preorder' && !detailProduct.preOrderConfirmed ? `<span class="button button-disabled" aria-disabled="true">Stok dikonfirmasi sebelum pesan</span>` : '<button class="button button-primary" type="submit" form="product-purchase-form" data-detail-sticky-buy data-purchase-action="buy" disabled>Beli sekarang</button>'}</div>` : ''}
     <footer class="site-footer"><div class="footer-inner">
       <div class="footer-brand-col"><a class="brand footer-brand" href="#/">Bacshop</a><p class="footer-summary">Periksa detail produk dan ketentuan sebelum membeli.</p></div>
       <div class="footer-col"><h3>Belanja</h3><a href="#/kategori/semua">Semua produk</a><a href="#/kategori/ai">AI & produktivitas</a><a href="#/kategori/streaming">Streaming</a><a href="#/promo">Promo</a></div>
@@ -392,18 +392,8 @@
           <div class="product-card-footer"><span class="fulfillment"><span class="fulfillment-dot"></span>${escapeHtml(product.fulfillment)}</span></div>
         </div>
       </a>
-      <div class="product-card-actions"><a class="button button-primary product-detail-button" href="#/produk/${encodeURIComponent(product.slug)}">Detail</a>${adminPreviewMode || needsStockConfirmation || outOfStock ? `<button class="button cart-icon-button" type="button" disabled aria-label="${adminPreviewMode ? 'Mode pratinjau' : outOfStock ? 'Stok habis' : 'Stok belum dikonfirmasi'}">${feather('shopping-cart')}</button>` : `<button class="button cart-icon-button" type="button" data-purchase-open="${product.id}" data-purchase-mode="cart" aria-label="Pilih spesifikasi ${escapeHtml(product.name)}">${feather('shopping-cart')}</button>`}</div>
+      <div class="product-card-actions"><a class="button button-primary product-detail-button" href="#/produk/${encodeURIComponent(product.slug)}">Detail</a>${adminPreviewMode || needsStockConfirmation || outOfStock ? `<button class="button cart-icon-button" type="button" disabled aria-label="${adminPreviewMode ? 'Mode pratinjau' : outOfStock ? 'Stok habis' : 'Stok belum dikonfirmasi'}">${feather('shopping-cart')}</button>` : `<a class="button cart-icon-button" href="#/produk/${encodeURIComponent(product.slug)}?intent=cart" aria-label="Pilih spesifikasi ${escapeHtml(product.name)}">${feather('shopping-cart')}</a>`}</div>
     </article>`;
-  }
-
-  function purchaseDialogMarkup(product, mode, quantity, minimumQuantity = 1) {
-    const specifications = (product.specifications || []).map((specification) => `<label class="purchase-specification-field"><span>${escapeHtml(specification.name)}</span><select name="${escapeHtml(specification.id)}" data-purchase-specification="${escapeHtml(specification.id)}" ${specification.required === false ? '' : 'required'}>${specification.required === false ? '<option value="">Tanpa pilihan</option>' : '<option value="">Pilih terlebih dahulu</option>'}${(specification.options || []).map((option) => `<option value="${escapeHtml(option.value)}">${escapeHtml(option.label)}${Number(option.priceAdjustment) ? ` · ${Number(option.priceAdjustment) > 0 ? '+' : ''}${rupiah(Number(option.priceAdjustment))}` : ''}</option>`).join('')}</select></label>`).join('');
-    const available = product.stockAvailable === null || product.stockAvailable === undefined ? 99 : Math.max(0, Number(product.stockAvailable));
-    const minimum = Math.max(1, Math.min(99, Number(minimumQuantity) || 1));
-    const requested = Math.max(minimum, Number(quantity) || minimum);
-    const safeQuantity = Math.max(1, Math.min(99, requested, available || 1));
-    const action = mode === 'buy' ? 'Beli sekarang' : 'Tambah ke keranjang';
-    return `<form class="product-purchase-form" data-purchase-form data-minimum-quantity="${minimum}" data-stock-limit="${available}"><header class="product-purchase-header"><div><span class="product-category">${escapeHtml(CATEGORIES.find((category) => category.slug === product.category)?.name || 'Produk digital')}</span><h2 id="purchase-dialog-title">Atur pesanan</h2><p>${escapeHtml(product.name)}</p></div><button class="icon-button" type="button" data-close-purchase aria-label="Tutup">${feather('x')}</button></header><div class="product-purchase-fields">${specifications || '<p class="purchase-no-specification">Produk ini tidak memiliki pilihan varian. Tentukan jumlah yang ingin dipesan.</p>'}<label class="purchase-quantity-field"><span>Jumlah${minimum > 1 ? ` · minimum ${minimum} unit` : ''}</span><input type="number" min="${minimum}" max="${Math.max(1, Math.min(99, available || 99))}" value="${safeQuantity}" inputmode="numeric" data-purchase-quantity required /></label></div><div class="purchase-price-preview"><span>Harga per item</span><strong data-purchase-price>${rupiah(product.price)}</strong></div><p class="purchase-selection-error" data-purchase-error role="status" aria-live="polite" ${available < minimum ? '' : 'hidden'}>${available < minimum ? `Stok tersisa ${available} unit, belum cukup untuk minimum ${minimum} unit.` : ''}</p><footer class="product-purchase-actions"><button class="button" type="button" data-close-purchase>Batal</button><button class="button button-primary" type="submit" data-purchase-submit>${action}</button></footer></form>`;
   }
 
   function categoryLinks() {
@@ -538,25 +528,33 @@
     const outOfStock = product.stockAvailable !== null && product.stockAvailable !== undefined && Number(product.stockAvailable) === 0;
     const bulkQuantity = Number(product.bulkUnlockQuantity) || 1;
     const isBulkPurchase = params.get('bulk') === '1';
-    const requestedQuantity = Math.max(isBulkPurchase ? bulkQuantity : 1, Math.min(99, Number(params.get('qty')) || bulkQuantity));
+    const requestedQuantity = Math.max(isBulkPurchase ? bulkQuantity : 1, Math.min(99, Number(params.get('qty')) || (isBulkPurchase ? bulkQuantity : 1)));
     const bulkStockBlocked = isBulkPurchase && product.stockAvailable !== null && product.stockAvailable !== undefined && Number(product.stockAvailable) < bulkQuantity;
-    const purchaseAction = bulkStockBlocked
-      ? `<button class="button button-disabled" type="button" disabled>Stok belum cukup untuk minimum ${bulkQuantity}</button>`
+    const minimumQuantity = isBulkPurchase ? bulkQuantity : 1;
+    const stockLimit = product.stockAvailable === null || product.stockAvailable === undefined ? 99 : Math.max(0, Math.min(99, Number(product.stockAvailable)));
+    const initialQuantity = Math.min(requestedQuantity, Math.max(1, stockLimit));
+    const unavailableReason = bulkStockBlocked
+      ? `Stok tersisa ${Number(product.stockAvailable)} unit, sedangkan minimum pesanan ini ${bulkQuantity} unit.`
       : outOfStock
-      ? `<button class="button button-disabled" type="button" disabled>Stok habis</button>`
-      : needsStockConfirmation
-      ? `<button class="button button-disabled" type="button" disabled>Stok dikonfirmasi sebelum pesan</button>`
-      : adminPreviewMode
-        ? '<span class="button button-disabled" aria-disabled="true">Mode pratinjau</span>'
-        : `<button class="button button-primary" type="button" data-purchase-open="${product.id}" data-purchase-mode="buy" data-default-quantity="${requestedQuantity}" data-minimum-quantity="${isBulkPurchase ? bulkQuantity : 1}">Beli sekarang</button><button class="button" type="button" data-purchase-open="${product.id}" data-purchase-mode="cart" data-default-quantity="${requestedQuantity}" data-minimum-quantity="${isBulkPurchase ? bulkQuantity : 1}">Tambah ke keranjang</button>`;
+        ? 'Stok produk sedang habis.'
+        : needsStockConfirmation
+          ? 'Stok pre-order belum dikonfirmasi.'
+          : '';
+    const purchaseBlocked = Boolean(unavailableReason || adminPreviewMode);
+    const specifications = (product.specifications || []).map((specification) => `<label class="detail-specification-field"><span>${escapeHtml(specification.name)}${specification.required === false ? ' · opsional' : ''}</span><select name="${escapeHtml(specification.id)}" data-detail-specification="${escapeHtml(specification.id)}" ${specification.required === false ? '' : 'required'} ${purchaseBlocked ? 'disabled' : ''}>${specification.required === false ? '<option value="">Tanpa pilihan</option>' : '<option value="">Pilih terlebih dahulu</option>'}${(specification.options || []).map((option) => `<option value="${escapeHtml(option.value)}">${escapeHtml(option.label)}${Number(option.priceAdjustment) ? ` · ${Number(option.priceAdjustment) > 0 ? '+' : ''}${rupiah(Number(option.priceAdjustment))}` : ''}</option>`).join('')}</select></label>`).join('');
     const category = CATEGORIES.find((item) => item.slug === product.category) || { name: 'Produk digital' };
     const terms = Object.entries(product.terms || {}).map(([label, value]) => `<li><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></li>`).join('');
     const bulkNote = product.bulkUnlockQuantity ? `<p class="bulk-unlock-note">Beli ${product.bulkUnlockQuantity} unit dalam satu pesanan yang lunas untuk membuka harga reseller produk ini secara permanen.</p>` : '';
     return `<nav class="breadcrumbs" aria-label="Breadcrumb"><a href="#/">Beranda</a><span aria-hidden="true">›</span><a href="#/kategori/${product.category}">${escapeHtml(category.name)}</a><span aria-hidden="true">›</span><span>${escapeHtml(product.name)}</span></nav>
-      <section class="page-panel"><div class="detail-layout"><div>${productArt(product, true)}</div><div class="detail-summary"><span class="product-category">${escapeHtml(category.name)}</span><h1>${escapeHtml(product.name)}</h1><div class="detail-meta"><span class="meta-pill">${escapeHtml(product.duration)}</span><span class="meta-pill">${escapeHtml(product.fulfillment)}</span>${product.orderMode === 'preorder' ? `<span class="meta-pill">${needsStockConfirmation ? 'Pre-order · menunggu konfirmasi stok' : 'Stok dikonfirmasi admin'}</span>` : ''}</div>
-        <div class="detail-price-box"><small>Harga ${product.priceContext === 'reseller' ? 'reseller' : 'retail'}</small><strong class="detail-price">${rupiah(product.price)}</strong></div>${bulkNote}
-        <div class="detail-actions">${purchaseAction}</div>
-        <ul class="term-list" aria-label="Informasi produk">${terms}</ul><p class="detail-description">${escapeHtml(product.description)}</p></div></div></section>
+      <section class="page-panel product-detail-page"><div class="detail-layout"><div class="detail-gallery">${productArt(product, true)}</div><div class="detail-summary"><span class="product-category">${escapeHtml(category.name)}</span><h1>${escapeHtml(product.name)}</h1><div class="detail-meta"><span class="meta-pill">${escapeHtml(product.duration)}</span><span class="meta-pill">${escapeHtml(product.fulfillment)}</span>${product.orderMode === 'preorder' ? `<span class="meta-pill">${needsStockConfirmation ? 'Pre-order · menunggu konfirmasi stok' : 'Stok dikonfirmasi admin'}</span>` : ''}</div>
+        <p class="detail-description">${escapeHtml(product.description)}</p><ul class="term-list" aria-label="Informasi produk">${terms}</ul>${bulkNote}</div>
+        <aside class="detail-purchase-card" aria-label="Pesan ${escapeHtml(product.name)}"><form class="detail-purchase-form" id="product-purchase-form" data-detail-purchase data-product-id="${escapeHtml(product.id)}" data-minimum-quantity="${minimumQuantity}" data-stock-limit="${stockLimit}"><div class="detail-price-box"><small>Harga ${product.priceContext === 'reseller' ? 'reseller' : 'retail'}</small><strong class="detail-price" data-detail-unit-price>${rupiah(product.price)}</strong></div>
+          <div class="detail-specification-list">${specifications || '<p class="detail-no-specification">Tidak ada pilihan tambahan untuk produk ini.</p>'}</div>
+          <div class="detail-quantity-row"><label class="detail-quantity-field"><span>Jumlah${minimumQuantity > 1 ? ` · minimum ${minimumQuantity} unit` : ''}</span><input type="number" name="quantity" min="${minimumQuantity}" max="${Math.max(1, stockLimit)}" value="${initialQuantity}" inputmode="numeric" data-detail-quantity required ${purchaseBlocked ? 'disabled' : ''} /></label><span class="detail-stock-note">${product.stockAvailable === null || product.stockAvailable === undefined ? 'Stok tersedia' : `Stok ${Number(product.stockAvailable)} unit`}</span></div>
+          <div class="detail-purchase-total"><span>Total</span><strong data-detail-total>${rupiah(product.price * initialQuantity)}</strong></div>
+          <div class="detail-actions">${adminPreviewMode ? '<span class="button button-disabled" aria-disabled="true">Mode pratinjau</span>' : purchaseBlocked ? `<button class="button button-disabled" type="button" disabled>${escapeHtml(unavailableReason)}</button>` : `<button class="button button-primary" type="submit" data-purchase-action="buy" disabled>Beli sekarang</button><button class="button detail-cart-action" type="submit" data-purchase-action="cart" disabled>Tambah ke keranjang</button>`}</div>
+          <p class="detail-purchase-error" data-detail-purchase-error role="status" aria-live="polite" hidden></p>
+        </form></aside></div></section>
       <section class="section">${sectionHead('Pilihan lainnya','Jelajahi produk lain dari toko.') }<div class="product-grid">${PRODUCTS.filter((item) => item.id !== product.id).slice(0, 5).map(productCard).join('')}</div></section>`;
   }
 
@@ -625,28 +623,23 @@
   function renderInfoPage(path) {
     if (path === '/program-reseller') {
       const price = Number(STOREFRONT.resellerPlan?.price) || 149000;
-      const bulkProducts = PRODUCTS.filter((product) => Number(product.bulkUnlockQuantity) >= 2);
-      const firstBulk = bulkProducts[0];
-      const firstMinimum = Number(firstBulk?.bulkUnlockQuantity) || 1;
-      const firstStock = firstBulk?.stockAvailable === null || firstBulk?.stockAvailable === undefined ? 99 : Math.max(0, Number(firstBulk.stockAvailable));
-      const firstBulkUnavailable = firstStock < firstMinimum;
-      const firstQuantity = firstBulkUnavailable ? firstStock : firstMinimum;
-      const bulkSelector = bulkProducts.length ? `<div class="bulk-config-grid"><div class="bulk-product-picker"><span>Produk</span>${customDropdown('productId', 'Pilih produk', bulkProducts.map((product) => ({ value: product.id, label: product.name, minimum: Number(product.bulkUnlockQuantity), slug: product.slug })), firstBulk.id, 'bulk-product-select', 'data-bulk-product')}</div><label class="bulk-quantity-picker"><span>Jumlah</span><input type="number" min="${firstMinimum}" max="${Math.min(99, Math.max(1, firstStock))}" value="${firstQuantity}" inputmode="numeric" data-bulk-quantity ${firstBulkUnavailable ? 'disabled' : ''} /><small>Minimum ${firstMinimum} unit</small></label></div><div class="reseller-bulk-result"><span class="reseller-result-icon">${feather(firstBulkUnavailable ? 'alert-circle' : 'check')}</span><p class="bulk-calculator-result" data-bulk-result aria-live="polite"></p></div><a class="button button-primary bulk-product-link${firstBulkUnavailable ? ' is-disabled' : ''}" data-bulk-product-link aria-disabled="${firstBulkUnavailable}" href="#/produk/${encodeURIComponent(firstBulk.slug)}?bulk=1&amp;qty=${firstQuantity}">${firstBulkUnavailable ? 'Stok belum cukup' : 'Lanjut pilih produk'}</a>` : '<p class="bulk-calculator-result">Belum ada produk yang mengatur minimum pembelian bulk.</p>';
+      const visibleResellerProduct = PRODUCTS.find((product) => product.priceContext === 'reseller');
+      const resellerAccess = Boolean(currentUser?.resellerPlan || currentUser?.isReseller || visibleResellerProduct);
       const planAction = currentUser?.resellerPlan
-        ? '<span class="reseller-active-label">Akses seluruh katalog sudah aktif</span><a class="button button-primary" href="#/kategori/semua">Belanja dengan harga reseller</a>'
+        ? '<span class="reseller-active-label">Akses seluruh katalog aktif</span><a class="button button-primary" href="#/kategori/semua">Lihat katalog</a>'
         : adminPreviewMode
-          ? '<span class="reseller-active-label">Tombol pembelian nonaktif dalam pratinjau.</span>'
+          ? '<span class="reseller-active-label">Pembelian nonaktif dalam pratinjau.</span>'
           : currentUser
-            ? '<button class="button button-primary" type="button" data-buy-reseller-plan>Buka akses semua produk</button>'
-            : '<a class="button button-primary" href="#/masuk?next=%2Fprogram-reseller">Masuk untuk melanjutkan</a>';
+            ? '<button class="button button-primary" type="button" data-buy-reseller-plan>Aktifkan akses katalog</button>'
+            : '<a class="button button-primary" href="#/masuk?next=%2Fprogram-reseller">Masuk untuk mengaktifkan</a>';
+      const resellerPreview = visibleResellerProduct
+        ? `<article class="reseller-price-preview"><div class="reseller-preview-product-thumb ${visibleResellerProduct.image ? 'product-media' : 'image-placeholder'}" ${visibleResellerProduct.image ? `style="background-image:url('${escapeHtml(visibleResellerProduct.image)}')"` : ''} role="img" aria-label="Gambar ${escapeHtml(visibleResellerProduct.name)}"></div><div class="reseller-preview-product-copy"><span class="rail-eyebrow">Harga reseller aktif</span><strong>${escapeHtml(visibleResellerProduct.name)}</strong><span>${rupiah(visibleResellerProduct.price)}</span></div><a class="rail-link" href="#/produk/${encodeURIComponent(visibleResellerProduct.slug)}">Lihat produk ${feather('arrow-right')}</a></article>`
+        : `<div class="reseller-price-preview reseller-price-preview-locked"><span class="rail-eyebrow">Tampilan toko setelah aktif</span><strong>Harga khusus tampil di katalog</strong><p>Produk dan halaman belanja tetap sama. Harga reseller muncul langsung pada produk yang aksesnya sudah terbuka.</p><a class="rail-link" href="#/kategori/semua">Lihat katalog ${feather('arrow-right')}</a></div>`;
       return `<nav class="breadcrumbs" aria-label="Breadcrumb"><a href="#/">Beranda</a><span aria-hidden="true">›</span><span>Program reseller</span></nav>
-        <section class="page-panel reseller-program-page"><div class="page-heading"><span class="reseller-page-eyebrow">PROGRAM RESELLER</span><h1>Harga khusus untuk jualan ulang</h1><p>Mulai dari produk yang paling kamu butuhkan. Akses seluruh katalog tersedia dalam satu pembelian.</p></div>
-          <div class="reseller-access-layout">
-            <section class="reseller-bulk-panel" aria-labelledby="reseller-bulk-heading"><div class="reseller-panel-heading"><span class="reseller-panel-icon">${feather('package')}</span><div><span class="reseller-path-label">AKSES PER PRODUK</span><h2 id="reseller-bulk-heading">Mulai dari minimum produk</h2><p>Pilih jumlah untuk satu produk. Harga khusus produk tersebut aktif setelah pesanan dibayar dan diverifikasi.</p></div></div>${bulkSelector}</section>
-            <aside class="reseller-catalog-offer"><div class="reseller-offer-heading"><span class="reseller-path-label">AKSES SELURUH KATALOG</span><span class="reseller-once-badge">Sekali bayar</span></div><h2>Satu akses untuk semua produk</h2><p>${escapeHtml(STOREFRONT.resellerPlan?.terms || 'Akses harga reseller berlaku permanen setelah pesanan dibayar dan diverifikasi.')}</p><div class="reseller-offer-price"><strong>${rupiah(price)}</strong><span>sekali</span></div>${planAction}</aside>
-          </div>
-          <div class="reseller-program-footnote"><p><span class="reseller-result-icon">${feather('check')}</span><span><strong>Akses aktif setelah pembayaran terverifikasi</strong><small>Pembelian produk membuka harga khusus untuk produk tersebut. Paket membuka harga reseller seluruh katalog.</small></span></p><a class="text-link" href="#/faq">Pertanyaan tentang reseller ${feather('arrow-right')}</a></div>
-        </section>`;
+        <section class="info-layout info-layout-faq info-layout-reseller"><div class="info-main"><div class="page-heading"><h1>Program reseller</h1><p>Harga khusus tampil langsung di katalog setelah akses dibuka.</p></div>
+          <div class="faq-list reseller-info-list"><details open><summary>Bagaimana akses harga reseller dibuka?</summary><p>Penuhi minimum pembelian pada satu produk dalam satu pesanan. Setelah pembayaran diverifikasi, harga reseller produk tersebut terbuka permanen.</p></details><details><summary>Ada akses untuk seluruh katalog?</summary><p>Paket reseller berlaku permanen untuk semua produk dengan harga yang ditetapkan admin. Harganya ${rupiah(price)} dan dibayar satu kali.</p></details><details><summary>Di mana harga reseller terlihat?</summary><p>Di katalog dan halaman detail produk yang sama. Produk yang sudah terbuka menampilkan harga reseller di tempat harga retail.</p></details><details><summary>Kapan akses mulai aktif?</summary><p>Setelah pembayaran QRIS terverifikasi. Pesanan dan status pembayarannya dapat dilihat dari menu Pesanan.</p></details></div>
+          <div class="faq-support"><div><strong>${resellerAccess ? 'Harga reseller sudah tersedia di katalogmu.' : 'Lihat produk dengan tampilan toko yang sama.'}</strong><span>${resellerAccess ? 'Harga khusus tampil langsung pada produk yang aksesnya sudah aktif.' : 'Pilih akses lebih dulu, lalu belanja seperti biasa dari katalog Bacshop.'}</span></div><a class="button button-primary" href="#/kategori/semua">Buka katalog</a></div>
+        </div><aside class="info-side-rail faq-side-rail"><section class="rail-card"><span class="rail-eyebrow">Akses seluruh katalog</span><h2>${currentUser?.resellerPlan ? 'Akses reseller aktif' : 'Satu kali bayar'}</h2><p>${currentUser?.resellerPlan ? 'Harga reseller seluruh katalog sudah tersedia di halaman produk.' : escapeHtml(STOREFRONT.resellerPlan?.terms || 'Paket membuka harga reseller permanen untuk seluruh katalog setelah pembayaran QRIS terverifikasi.')}</p><strong class="reseller-rail-price">${rupiah(price)} <small>sekali</small></strong>${planAction}</section><section class="rail-card rail-card-soft">${resellerPreview}</section></aside></section>`;
     }
     if (path === '/promo') {
       const promos = (STOREFRONT.promotions || []).filter((promo) => promo.active);
@@ -780,11 +773,11 @@
         ${checkoutStepsMarkup(2)}
         <div class="checkout-layout">
           <div class="checkout-payment-column">
-            <section class="checkout-payment-panel checkout-confirmation-panel"><p class="checkout-section-kicker">Langkah 2 · Konfirmasi</p><h2>Pesanan untuk akun ini</h2>
-              <div class="checkout-account-note"><span>Pesanan untuk akun</span><strong>${escapeHtml(currentUser?.name || 'Akun Bacshop')}</strong><small>${escapeHtml(currentUser?.email || '')}</small></div>
-              <p class="checkout-payment-explainer">${feather('arrow-right')} Setelah pesanan dikonfirmasi, kamu akan membuat QRIS khusus pada halaman pembayaran. Nominal akan terisi sesuai total pesanan.</p>
+            <section class="checkout-payment-panel checkout-confirmation-panel"><p class="checkout-section-kicker">Informasi pesanan</p><h2>Akun penerima</h2>
+              <div class="checkout-account-note"><span>Pesanan digital untuk</span><strong>${escapeHtml(currentUser?.name || 'Akun Bacshop')}</strong><small>${escapeHtml(currentUser?.email || '')}</small></div>
+              <p class="checkout-payment-explainer">QRIS untuk pembayaran dibuat setelah kamu mengonfirmasi pesanan.</p>
             </section>
-            <section class="checkout-order-panel checkout-order-review"><header><strong>Produk yang dipesan</strong><span>${itemCount} item</span></header><div class="checkout-order-list">${items.map((item) => `<div class="checkout-item"><span><strong>${escapeHtml(item.product.name)}</strong>${item.specificationText ? `<small>${escapeHtml(item.specificationText)}</small>` : ''}<small>${item.quantity} × ${rupiah(item.unitPrice)}</small></span><strong>${rupiah(item.unitPrice * item.quantity)}</strong></div>`).join('')}</div></section>
+            <section class="checkout-order-panel checkout-order-review"><header><strong>Produk yang dipesan</strong><span>${itemCount} item</span></header><div class="checkout-order-list">${items.map((item) => `<div class="checkout-item"><div class="checkout-item-thumb ${item.product.image ? 'product-media' : 'image-placeholder'}" ${item.product.image ? `style="background-image:url('${escapeHtml(item.product.image)}')"` : ''} role="img" aria-label="Gambar ${escapeHtml(item.product.name)}"></div><span><strong>${escapeHtml(item.product.name)}</strong>${item.specificationText ? `<small>${escapeHtml(item.specificationText)}</small>` : ''}<small>${item.quantity} × ${rupiah(item.unitPrice)}</small></span><strong>${rupiah(item.unitPrice * item.quantity)}</strong></div>`).join('')}</div></section>
           </div>
           <aside class="checkout-total-card"><h2>Total pesanan</h2><div class="summary-line"><span>Subtotal · ${itemCount} item</span><span>${rupiah(total)}</span></div><div class="summary-line"><span>Biaya layanan</span><span>Gratis</span></div><div class="summary-total"><span>Total</span><strong>${rupiah(total)}</strong></div><button class="button button-primary" type="button" data-confirm-order>Konfirmasi pesanan</button><p class="summary-note">QRIS dibuat setelah pesanan dikonfirmasi, pada halaman pembayaran.</p><p class="checkout-error" data-order-error role="status" aria-live="polite" hidden></p><a class="checkout-edit-cart" href="${checkoutItemsOverride?.length === 1 ? `#/produk/${encodeURIComponent(items[0].product.slug)}` : '#/keranjang'}">${checkoutItemsOverride?.length === 1 ? 'Kembali ke produk untuk mengubah pilihan' : 'Kembali ke keranjang untuk ubah jumlah'}</a></aside>
         </div>
@@ -1973,61 +1966,6 @@
       filterFaq();
     }));
 
-    const bulkProduct = app.querySelector('[data-bulk-product]');
-    const bulkQuantity = app.querySelector('[data-bulk-quantity]');
-    const bulkResult = app.querySelector('[data-bulk-result]');
-    const bulkProductLink = app.querySelector('[data-bulk-product-link]');
-    const updateBulkCalculator = () => {
-      if (!bulkProduct || !bulkQuantity || !bulkResult) return;
-      const minimum = Math.max(1, Number(bulkProduct.dataset.minimum) || 1);
-      const selectedProduct = PRODUCTS.find((product) => product.id === bulkProduct.value);
-      const available = selectedProduct?.stockAvailable === null || selectedProduct?.stockAvailable === undefined
-        ? 99
-        : Math.max(0, Math.floor(Number(selectedProduct.stockAvailable) || 0));
-      const maxQuantity = Math.min(99, available);
-      const stockCanMeetMinimum = available >= minimum;
-      const enteredQuantity = Number(bulkQuantity.value);
-      const quantity = Number.isFinite(enteredQuantity) && enteredQuantity > 0 ? Math.floor(enteredQuantity) : 0;
-      bulkQuantity.min = String(minimum || 1);
-      bulkQuantity.max = String(Math.max(1, maxQuantity));
-      bulkQuantity.disabled = !stockCanMeetMinimum;
-      const ready = stockCanMeetMinimum && quantity >= minimum && quantity <= maxQuantity;
-      const resultIcon = app.querySelector('.reseller-result-icon');
-      if (resultIcon) {
-        resultIcon.innerHTML = feather(ready ? 'check' : 'alert-circle');
-        resultIcon.classList.toggle('is-unavailable', !ready);
-      }
-      if (bulkProductLink && selectedProduct) {
-        bulkProductLink.href = `#/produk/${encodeURIComponent(selectedProduct.slug)}?bulk=1&qty=${quantity}`;
-        bulkProductLink.setAttribute('aria-disabled', String(!ready));
-        bulkProductLink.classList.toggle('is-disabled', !ready);
-        bulkProductLink.textContent = !stockCanMeetMinimum ? 'Stok belum cukup' : quantity > maxQuantity ? 'Jumlah melebihi stok' : 'Lanjut pilih produk';
-      }
-      if (!stockCanMeetMinimum) {
-        bulkResult.textContent = `${selectedProduct?.name || 'Produk'} memiliki stok ${available} unit; minimum pembelian ${minimum} unit belum bisa dipenuhi.`;
-      } else if (quantity > maxQuantity) {
-        bulkResult.textContent = `Stok ${selectedProduct?.name || 'produk ini'} tersisa ${available} unit. Kurangi jumlah pesanan.`;
-      } else if (quantity >= minimum) {
-        bulkResult.textContent = `${selectedProduct?.name || 'Produk'}: ${quantity} unit. Akses harga khusus aktif setelah pembayaran diverifikasi.`;
-      } else {
-        bulkResult.textContent = `Minimum ${minimum} unit untuk ${selectedProduct?.name || 'produk ini'}; tambah ${minimum - quantity} unit lagi.`;
-      }
-    };
-    bulkProduct?.addEventListener('change', () => {
-      const minimum = Number(bulkProduct.dataset.minimum) || 1;
-      const selectedProduct = PRODUCTS.find((product) => product.id === bulkProduct.value);
-      const available = selectedProduct?.stockAvailable === null || selectedProduct?.stockAvailable === undefined
-        ? 99
-        : Math.max(0, Math.floor(Number(selectedProduct.stockAvailable) || 0));
-      if (bulkQuantity) bulkQuantity.value = String(available < minimum ? available : minimum);
-      updateBulkCalculator();
-    });
-    bulkQuantity?.addEventListener('input', updateBulkCalculator);
-    bulkProductLink?.addEventListener('click', (event) => {
-      if (bulkProductLink.getAttribute('aria-disabled') === 'true') event.preventDefault();
-    });
-    updateBulkCalculator();
-
     app.querySelectorAll('[data-search-form]').forEach((form) => {
       form.addEventListener('submit', (event) => {
         event.preventDefault();
@@ -2050,72 +1988,59 @@
         }
       });
     });
-    app.querySelectorAll('[data-purchase-open]').forEach((button) => button.addEventListener('click', () => {
-      if (adminPreviewMode) { showToast('Mode pratinjau: pesanan tidak dapat dibuat.'); return; }
-      const product = PRODUCTS.find((entry) => entry.id === button.dataset.purchaseOpen);
-      if (!product) return;
-      if (product.stockAvailable !== null && product.stockAvailable !== undefined && Number(product.stockAvailable) < 1) {
-        showToast('Stok produk sedang habis.');
-        return;
-      }
-      const dialog = document.createElement('dialog');
-      dialog.className = 'product-purchase-dialog';
-      const minimumQuantity = Math.max(1, Number(button.dataset.minimumQuantity) || 1);
-      dialog.innerHTML = purchaseDialogMarkup(product, button.dataset.purchaseMode, button.dataset.defaultQuantity || minimumQuantity, minimumQuantity);
-      app.append(dialog);
-      const form = dialog.querySelector('[data-purchase-form]');
-      const quantityField = dialog.querySelector('[data-purchase-quantity]');
-      const submitButton = dialog.querySelector('[data-purchase-submit]');
-      const errorMessage = dialog.querySelector('[data-purchase-error]');
-      const selectedSpecifications = () => Object.fromEntries([...dialog.querySelectorAll('[data-purchase-specification]')].map((field) => [field.dataset.purchaseSpecification, field.value]).filter(([, value]) => value));
-      const updatePreview = () => {
-        const resolved = resolveClientSpecifications(product, selectedSpecifications());
-        const quantity = Number(quantityField?.value);
-        const stockLimit = product.stockAvailable === null || product.stockAvailable === undefined ? 99 : Math.max(0, Number(product.stockAvailable));
-        const quantityValid = Number.isInteger(quantity) && quantity >= minimumQuantity && quantity <= 99 && quantity <= stockLimit;
-        const price = dialog.querySelector('[data-purchase-price]');
-        if (price) price.textContent = resolved ? rupiah(resolved.unitPrice) : 'Pilih spesifikasi';
-        if (submitButton) submitButton.disabled = !resolved || !quantityValid;
+    const detailPurchaseForm = app.querySelector('[data-detail-purchase]');
+    if (detailPurchaseForm) {
+      const product = PRODUCTS.find((entry) => entry.id === detailPurchaseForm.dataset.productId);
+      const quantityField = detailPurchaseForm.querySelector('[data-detail-quantity]');
+      const errorMessage = detailPurchaseForm.querySelector('[data-detail-purchase-error]');
+      const selectedSpecifications = () => Object.fromEntries([...detailPurchaseForm.querySelectorAll('[data-detail-specification]')].map((field) => [field.dataset.detailSpecification, field.value]).filter(([, value]) => value));
+      const updateDetailPurchasePreview = () => {
+        if (!product || !quantityField) return;
+        const selection = resolveClientSpecifications(product, selectedSpecifications());
+        const quantity = Number(quantityField.value);
+        const minimum = Math.max(1, Number(detailPurchaseForm.dataset.minimumQuantity) || 1);
+        const stockLimit = Math.max(0, Number(detailPurchaseForm.dataset.stockLimit) || 0);
+        const quantityValid = Number.isInteger(quantity) && quantity >= minimum && quantity <= 99 && quantity <= stockLimit;
+        const ready = Boolean(selection && quantityValid && !adminPreviewMode);
+        const unitPrice = app.querySelector('[data-detail-unit-price]');
+        const totalPrice = app.querySelector('[data-detail-total]');
+        if (unitPrice) unitPrice.textContent = selection ? rupiah(selection.unitPrice) : 'Pilih spesifikasi';
+        if (totalPrice) totalPrice.textContent = selection && Number.isInteger(quantity) ? rupiah(selection.unitPrice * quantity) : '—';
+        app.querySelectorAll('[data-purchase-action]').forEach((button) => { button.disabled = !ready; });
       };
-      dialog.querySelectorAll('[data-purchase-specification]').forEach((field) => field.addEventListener('change', updatePreview));
+      detailPurchaseForm.querySelectorAll('[data-detail-specification]').forEach((field) => field.addEventListener('change', () => {
+        if (errorMessage) { errorMessage.hidden = true; errorMessage.textContent = ''; }
+        updateDetailPurchasePreview();
+      }));
       quantityField?.addEventListener('input', () => {
         if (errorMessage) { errorMessage.hidden = true; errorMessage.textContent = ''; }
-        updatePreview();
+        updateDetailPurchasePreview();
       });
-      dialog.querySelectorAll('[data-close-purchase]').forEach((closeButton) => closeButton.addEventListener('click', () => dialog.close()));
-      dialog.addEventListener('click', (event) => { if (event.target === dialog) dialog.close(); });
-      dialog.addEventListener('close', () => dialog.remove(), { once: true });
-      form?.addEventListener('submit', (event) => {
+      detailPurchaseForm.addEventListener('submit', (event) => {
         event.preventDefault();
+        if (!product) return;
         const selection = resolveClientSpecifications(product, selectedSpecifications());
         const quantity = Number(quantityField?.value);
-        if (!selection) { form.reportValidity(); return; }
-        if (!Number.isInteger(quantity) || quantity < 1 || quantity > 99) {
-          if (errorMessage) { errorMessage.hidden = false; errorMessage.textContent = 'Jumlah harus antara 1 dan 99.'; }
-          return;
-        }
-        if (quantity < minimumQuantity) {
-          if (errorMessage) { errorMessage.hidden = false; errorMessage.textContent = `Minimum pembelian ${minimumQuantity} unit.`; }
-          return;
-        }
-        if (product.stockAvailable !== null && product.stockAvailable !== undefined && quantity > Number(product.stockAvailable)) {
-          if (errorMessage) { errorMessage.hidden = false; errorMessage.textContent = `Stok tersisa ${Number(product.stockAvailable)} unit.`; }
+        const minimum = Math.max(1, Number(detailPurchaseForm.dataset.minimumQuantity) || 1);
+        const stockLimit = Math.max(0, Number(detailPurchaseForm.dataset.stockLimit) || 0);
+        if (!selection) { detailPurchaseForm.reportValidity(); return; }
+        if (!Number.isInteger(quantity) || quantity < minimum || quantity > 99 || quantity > stockLimit) {
+          if (errorMessage) {
+            errorMessage.hidden = false;
+            errorMessage.textContent = quantity < minimum ? `Minimum pembelian ${minimum} unit.` : `Stok tersisa ${stockLimit} unit.`;
+          }
           return;
         }
         const item = { id: product.id, quantity, specifications: selection.values };
-        if (button.dataset.purchaseMode === 'buy') {
+        if (event.submitter?.dataset.purchaseAction === 'buy') {
           writeCheckoutOverride([item]);
-          dialog.close();
           window.location.hash = '#/checkout';
           return;
         }
         addToCart(item.id, item.quantity, item.specifications);
-        dialog.close();
       });
-      updatePreview();
-      dialog.showModal();
-      quantityField?.focus({ preventScroll: true });
-    }));
+      updateDetailPurchasePreview();
+    }
     app.querySelectorAll('[data-add-to-cart]').forEach((button) => button.addEventListener('click', () => addToCart(button.dataset.addToCart)));
     app.querySelectorAll('[data-quantity]').forEach((button) => button.addEventListener('click', () => updateQuantity(button.dataset.quantity, Number(button.dataset.delta))));
     app.querySelectorAll('[data-cart-quantity]').forEach((input) => input.addEventListener('change', () => setCartQuantity(input.dataset.cartQuantity, input.value)));
