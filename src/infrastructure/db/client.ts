@@ -8,8 +8,13 @@ export function createDatabase(connectionString: string, options: { poolMax?: nu
   if (!connectionString || !/^postgres(?:ql)?:\/\//.test(connectionString)) {
     throw new Error("A PostgreSQL DATABASE_URL is required");
   }
+  // adapter-pg serializes Date arguments as UTC wall-clock text and normalizes
+  // timestamptz results to +00:00. Every pooled session must therefore use UTC.
+  // Preserve other PostgreSQL startup options; the final timezone setting wins.
+  const connection = new URL(connectionString);
+  connection.searchParams.set("options", `${connection.searchParams.get("options") ?? ""} -c timezone=UTC`.trim());
   return new PrismaClient({
-    adapter: new PrismaPg({ connectionString, max: options.poolMax ?? 10, connectionTimeoutMillis: options.connectTimeoutMs ?? 5000, idleTimeoutMillis: 30000 }),
+    adapter: new PrismaPg({ connectionString: connection.toString(), max: options.poolMax ?? 10, connectionTimeoutMillis: options.connectTimeoutMs ?? 5000, idleTimeoutMillis: 30000 }),
     log: [],
   });
 }
