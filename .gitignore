@@ -8,10 +8,7 @@ coverage/
 .superpowers/
 playwright-report/
 test-results/
-.test-results/
 *.tsbuildinfo
 .bacshop-private/
 assets/uploads/
 *.tmp
-src/generated/prisma/
-.local-db/

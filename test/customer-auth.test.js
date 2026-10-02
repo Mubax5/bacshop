@@ -11,15 +11,16 @@ const { after, before, test } = require('node:test');
 
 const root = path.resolve(__dirname, '..');
 let serverProcess;
-let danaServer;
+let midtransServer;
 let baseUrl;
-let danaBaseUrl;
+let midtransBaseUrl;
 let tempDirectory;
 let adminCookie;
-let danaRequests = [];
-let danaPublicKey;
-let danaPrivateKey;
-let danaStatus = '01';
+let midtransRequests = [];
+let midtransStatus = 'pending';
+let midtransTransactions = new Map();
+let midtransChargeResponse = null;
+let serverOutput = '';
 
 async function freePort() {
   const probe = net.createServer();
@@ -50,24 +51,51 @@ function cookieFrom(response) {
 }
 
 before(async () => {
-  const danaKeys = crypto.generateKeyPairSync('rsa', { modulusLength: 2048, publicKeyEncoding: { type: 'spki', format: 'pem' }, privateKeyEncoding: { type: 'pkcs8', format: 'pem' } });
-  danaPrivateKey = danaKeys.privateKey;
-  danaPublicKey = danaKeys.publicKey;
-  danaServer = http.createServer(async (req, res) => {
+  midtransTransactions = new Map();
+  midtransChargeResponse = null;
+  serverOutput = '';
+  midtransServer = http.createServer(async (req, res) => {
     let raw = '';
     for await (const chunk of req) raw += chunk;
-    danaRequests.push({ method: req.method, path: req.url, headers: req.headers, body: JSON.parse(raw || '{}') });
-    res.writeHead(200, { 'content-type': 'application/json' });
-    if (req.url === '/v1.0/qr/qr-mpm-generate.htm') res.end(JSON.stringify({ responseCode: '2004700', responseMessage: 'Successful', partnerReferenceNo: JSON.parse(raw).partnerReferenceNo, qrContent: '000201010212TEST' }));
-    else if (req.url === '/rest/v1.1/debit/status') res.end(JSON.stringify({ responseCode: '2005500', responseMessage: 'Success', latestTransactionStatus: danaStatus, originalPartnerReferenceNo: JSON.parse(raw).originalPartnerReferenceNo, originalReferenceNo: 'DANA-REF', merchantId: 'merchant-test', amount: JSON.parse(raw).amount }));
-    else res.end(JSON.stringify({ responseCode: '4040000', responseMessage: 'Not found' }));
+    const body = raw ? JSON.parse(raw) : {};
+    midtransRequests.push({ method: req.method, path: req.url, headers: req.headers, body });
+    res.setHeader('content-type', 'application/json');
+    if (req.method === 'POST' && req.url === '/v2/charge') {
+      if (midtransChargeResponse) {
+        res.end(JSON.stringify(midtransChargeResponse));
+        return;
+      }
+      const orderId = body.transaction_details.order_id;
+      midtransTransactions.set(orderId, Number(body.transaction_details.gross_amount));
+      res.end(JSON.stringify({
+        status_code: '201', status_message: 'QRIS transaction is created', transaction_id: `MTX-${orderId}`,
+        order_id: orderId, merchant_id: 'merchant-test', gross_amount: `${body.transaction_details.gross_amount}.00`,
+        currency: 'IDR', payment_type: 'qris', transaction_status: 'pending', fraud_status: 'accept',
+        acquirer: 'gopay', expiry_time: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
+        actions: [
+          { name: 'generate-qr-code-v2', method: 'GET', url: `${midtransBaseUrl}/v4/qris/gopay/MTX-${orderId}/qr-code` },
+          { name: 'generate-qr-code', method: 'GET', url: `${midtransBaseUrl}/v2/qris/MTX-${orderId}/qr-code` },
+        ],
+      }));
+    } else if (req.method === 'GET' && /^\/v4\/qris\/.+\/qr-code$/.test(req.url)) {
+      res.writeHead(503, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ status_code: '503', status_message: 'Image unavailable' }));
+    } else if (req.method === 'GET' && req.url.endsWith('/qr-code')) {
+      res.writeHead(200, { 'content-type': 'image/png' });
+      res.end(Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+j0ioAAAAASUVORK5CYII=', 'base64'));
+    } else if (req.method === 'GET' && /^\/v2\/.+\/status$/.test(req.url)) {
+      const orderId = decodeURIComponent(req.url.slice('/v2/'.length, -'/status'.length));
+      res.end(JSON.stringify({
+        status_code: '200', transaction_id: `MTX-${orderId}`, order_id: orderId, merchant_id: 'merchant-test',
+        gross_amount: `${midtransTransactions.get(orderId)}.00`, currency: 'IDR', payment_type: 'qris', transaction_status: midtransStatus,
+        fraud_status: 'accept',
+      }));
+    } else res.end(JSON.stringify({ status_code: '404', status_message: 'Not found' }));
   });
-  danaServer.listen(0, '127.0.0.1');
-  await once(danaServer, 'listening');
-  danaBaseUrl = `http://127.0.0.1:${danaServer.address().port}`;
+  midtransServer.listen(0, '127.0.0.1');
+  await once(midtransServer, 'listening');
+  midtransBaseUrl = `http://127.0.0.1:${midtransServer.address().port}`;
   tempDirectory = await fs.mkdtemp(path.join(os.tmpdir(), 'bacshop-auth-'));
-  const danaPublicKeyFile = path.join(tempDirectory, 'dana-public-key.pem');
-  await fs.writeFile(danaPublicKeyFile, danaPublicKey, 'utf8');
   const productFile = path.join(tempDirectory, 'products.json');
   const uploadDirectory = path.join(tempDirectory, 'uploads');
   await fs.copyFile(path.join(root, 'data', 'products.json'), productFile);
@@ -77,16 +105,17 @@ before(async () => {
   serverProcess = spawn(process.execPath, ['server.js'], {
     cwd: root,
     env: { ...process.env, NODE_ENV: 'test', PORT: String(port), BACSHOP_DATA_DIR: tempDirectory, BACSHOP_PRODUCTS_FILE: productFile, BACSHOP_UPLOADS_DIR: uploadDirectory,
-      DANA_API_BASE_URL: danaBaseUrl, DANA_MERCHANT_ID: 'merchant-test', DANA_CLIENT_ID: 'client-test', DANA_CHANNEL_ID: '95221', DANA_ORIGIN: 'http://localhost.test', DANA_STORE_ID: 'store-test', DANA_PRIVATE_KEY: danaKeys.privateKey, DANA_PUBLIC_KEY_FILE: danaPublicKeyFile },
+      MIDTRANS_API_BASE_URL: midtransBaseUrl, MIDTRANS_MERCHANT_ID: 'merchant-test', MIDTRANS_SERVER_KEY: 'test-server-key' },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
 
   let output = '';
-  serverProcess.stderr.on('data', (chunk) => { output += chunk.toString(); });
+  serverProcess.stderr.on('data', (chunk) => { output += chunk.toString(); serverOutput += chunk.toString(); });
   const started = new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error(`Server startup timed out: ${output}`)), 8000);
     serverProcess.stdout.on('data', (chunk) => {
       output += chunk.toString();
+      serverOutput += chunk.toString();
       if (output.includes('Bacshop berjalan')) {
         clearTimeout(timer);
         resolve();
@@ -118,7 +147,96 @@ after(async () => {
     await once(serverProcess, 'exit');
   }
   if (tempDirectory) await fs.rm(tempDirectory, { recursive: true, force: true });
-  if (danaServer) await new Promise((resolve) => danaServer.close(resolve));
+  if (midtransServer) await new Promise((resolve) => midtransServer.close(resolve));
+});
+
+test('checkout creates a Midtrans QRIS but exposes only a generic QR code experience', async () => {
+  midtransRequests = [];
+  const registration = await request('/api/auth/register', {
+    method: 'POST', body: { name: 'QR Buyer', email: 'midtrans@example.test', password: 'BuyerPass123!' },
+  });
+  const buyerCookie = cookieFrom(registration.response);
+  const order = await request('/api/orders', { method: 'POST', cookie: buyerCookie, body: { kind: 'reseller-plan' } });
+  assert.equal(order.response.status, 201);
+  assert.equal(order.data.order.total, 149000);
+  assert.equal(order.data.order.paymentStatus, 'pending');
+  assert.match(order.data.order.qrisImage, /^data:image\/png;base64,/);
+  assert.equal(order.data.order.paymentProvider, 'qris_dynamic');
+  const charge = midtransRequests.find((entry) => entry.method === 'POST' && entry.path === '/v2/charge');
+  assert.ok(charge, 'checkout calls the server-side Core API charge endpoint');
+  assert.equal(charge.body.payment_type, 'qris');
+  assert.equal(charge.body.transaction_details.order_id, order.data.order.id);
+  assert.equal(charge.body.transaction_details.gross_amount, 149000);
+  assert.equal(charge.headers.authorization, `Basic ${Buffer.from('test-server-key:').toString('base64')}`);
+  assert.equal(midtransRequests.some((entry) => entry.method === 'POST' && entry.path.includes('dana')), false);
+  const imageRequests = midtransRequests.filter((entry) => entry.method === 'GET' && entry.path.endsWith('/qr-code'));
+  assert.deepEqual(imageRequests.map((entry) => entry.path), [
+    `/v4/qris/gopay/MTX-${order.data.order.id}/qr-code`,
+    `/v2/qris/MTX-${order.data.order.id}/qr-code`,
+  ]);
+  assert.ok(imageRequests.every((entry) => entry.headers.authorization === charge.headers.authorization), 'each image request uses server-side authorization');
+  assert.equal(order.data.order.paymentInstructions.includes('Midtrans'), false);
+  const storefrontScript = await fetch(`${baseUrl}/app.js`).then((response) => response.text());
+  assert.doesNotMatch(storefrontScript, /Midtrans|DANA/, 'the shop interface contains no processor branding');
+});
+
+test('mismatched provider response gives a useful sanitized diagnostic', async () => {
+  serverOutput = '';
+  midtransChargeResponse = {
+    status_code: '202',
+    status_message: 'Merchant onboarding incomplete',
+    shouldNotLog: 'never-print-this-secret',
+  };
+  const registration = await request('/api/auth/register', {
+    method: 'POST', body: { name: 'QR Buyer', email: 'provider-mismatch@example.test', password: 'BuyerPass123!' },
+  });
+  const buyerCookie = cookieFrom(registration.response);
+  const order = await request('/api/orders', { method: 'POST', cookie: buyerCookie, body: { kind: 'reseller-plan' } });
+  midtransChargeResponse = null;
+
+  assert.equal(order.response.status, 502);
+  assert.match(serverOutput, /"httpStatus":200,"statusCode":"202","statusMessage":"Merchant onboarding incomplete","responseFields":\["status_code","status_message","shouldNotLog"\]/);
+  assert.doesNotMatch(serverOutput, /never-print-this-secret/);
+  assert.doesNotMatch(serverOutput, /test-server-key/);
+});
+
+test('an ambiguous successful QRIS response stays in the buyer order list', async () => {
+  midtransChargeResponse = { status_code: '202', status_message: 'Charge pending review' };
+  const registration = await request('/api/auth/register', {
+    method: 'POST', body: { name: 'QR Buyer', email: 'ambiguous-provider@example.test', password: 'BuyerPass123!' },
+  });
+  const buyerCookie = cookieFrom(registration.response);
+  const create = await request('/api/orders', { method: 'POST', cookie: buyerCookie, body: { kind: 'reseller-plan' } });
+  midtransChargeResponse = null;
+  const list = await request('/api/orders', { cookie: buyerCookie });
+
+  assert.equal(create.response.status, 502);
+  assert.match(create.data.error, /Periksa menu Pesanan sebelum mencoba lagi/);
+  assert.equal(list.response.status, 200);
+  assert.equal(list.data.orders.length, 1, 'the buyer can find an uncertain payment before trying again');
+  assert.equal(list.data.orders[0].paymentStatus, 'pending');
+  assert.equal(list.data.orders[0].status, 'awaiting_payment');
+  assert.equal(list.data.orders[0].qrisImage, undefined);
+});
+
+test('an inactive Midtrans QRIS channel gives an actionable error and removes the rejected draft', async () => {
+  midtransChargeResponse = {
+    status_code: '402',
+    status_message: 'Payment channel is not activated.',
+    id: 'provider-error-reference',
+  };
+  const registration = await request('/api/auth/register', {
+    method: 'POST', body: { name: 'QR Buyer', email: 'inactive-channel@example.test', password: 'BuyerPass123!' },
+  });
+  const buyerCookie = cookieFrom(registration.response);
+  const create = await request('/api/orders', { method: 'POST', cookie: buyerCookie, body: { kind: 'reseller-plan' } });
+  midtransChargeResponse = null;
+  const list = await request('/api/orders', { cookie: buyerCookie });
+
+  assert.equal(create.response.status, 502);
+  assert.match(create.data.error, /akun Production yang sama dengan MIDTRANS_SERVER_KEY/);
+  assert.equal(list.response.status, 200);
+  assert.equal(list.data.orders.length, 0, 'a provider-rejected draft should not look like a payment the buyer can complete');
 });
 
 test('buyer can register, log in, and read their own profile', async () => {
@@ -206,11 +324,39 @@ test('admin can create, update, and delete a catalog product', async () => {
   assert.equal(deleted.data.deleted, 'bulk-item');
 });
 
-test('checkout generates a transaction-specific dynamic QRIS and never uses a static merchant image', async () => {
-  danaRequests = [];
+test('admin bulk actions archive, restore, and delete selected products', async () => {
+  const products = ['bulk-alpha', 'bulk-beta'].map((id) => ({
+    id, slug: id, name: `Produk ${id}`, category: 'ai', price: 12000,
+    resellerPrice: null, bulkMinimum: null, duration: '1 bulan', fulfillment: 'Aktivasi digital',
+    description: 'Produk untuk menguji aksi katalog sekaligus.', terms: {}, stock: 10,
+    createdAt: '2026-09-29', orderMode: 'ready', preOrderConfirmed: true, image: '',
+  }));
+  for (const product of products) {
+    const created = await request('/api/admin/products', { method: 'POST', cookie: adminCookie, body: { product } });
+    assert.equal(created.response.status, 201);
+  }
+  const productIds = products.map((product) => product.id);
+  const archived = await request('/api/admin/products/bulk', { method: 'POST', cookie: adminCookie, body: { productIds, action: 'archive' } });
+  assert.deepEqual(archived.data.changedIds, productIds);
+  const publicWhileArchived = await request('/api/products');
+  assert.equal(publicWhileArchived.data.products.some((product) => productIds.includes(product.id)), false);
+
+  const restored = await request('/api/admin/products/bulk', { method: 'POST', cookie: adminCookie, body: { productIds, action: 'restore' } });
+  assert.deepEqual(restored.data.changedIds, productIds);
+  const publicAfterRestore = await request('/api/products');
+  assert.equal(productIds.every((id) => publicAfterRestore.data.products.some((product) => product.id === id)), true);
+
+  const deleted = await request('/api/admin/products/bulk', { method: 'POST', cookie: adminCookie, body: { productIds, action: 'delete' } });
+  assert.deepEqual(deleted.data.changedIds, productIds);
+  assert.deepEqual(deleted.data.blocked, []);
+  assert.equal(deleted.data.products.some((product) => productIds.includes(product.id)), false);
+});
+
+test('Midtrans QRIS payment status is verified before reseller access is unlocked', async () => {
+  midtransRequests = [];
   await fs.writeFile(path.join(tempDirectory, 'storefront.json'), JSON.stringify({ payment: { qrisImage: '/assets/uploads/legacy-static.png', instructions: 'Pindai QR statis' } }));
   const storefront = await request('/api/storefront');
-  assert.equal(storefront.data.payment.provider, 'DANA QRIS dinamis');
+  assert.equal(storefront.data.payment.provider, 'QRIS');
   assert.equal(storefront.data.payment.available, true);
   assert.equal('qrisImage' in storefront.data.payment, false);
   const registration = await request('/api/auth/register', {
@@ -221,41 +367,68 @@ test('checkout generates a transaction-specific dynamic QRIS and never uses a st
   assert.equal(order.response.status, 201);
   assert.match(order.data.order.qrisImage, /^data:image\/png;base64,/);
   assert.equal(order.data.order.paymentStatus, 'pending');
-  const generate = danaRequests.find((entry) => entry.path === '/v1.0/qr/qr-mpm-generate.htm');
+  const generate = midtransRequests.find((entry) => entry.method === 'POST' && entry.path === '/v2/charge');
   assert.ok(generate);
-  assert.equal(generate.body.amount.value, '149000.00');
-  assert.equal(generate.body.partnerReferenceNo, order.data.order.id);
-  assert.equal(generate.headers['x-partner-id'], 'client-test');
-  const timestamp = generate.headers['x-timestamp'];
-  const digest = crypto.createHash('sha256').update(JSON.stringify(generate.body)).digest('hex');
-  const signatureBase = `POST:/v1.0/qr/qr-mpm-generate.htm:${digest}:${timestamp}`;
-  assert.equal(crypto.verify('RSA-SHA256', Buffer.from(signatureBase), danaPublicKey, Buffer.from(generate.headers['x-signature'], 'base64')), true);
+  assert.equal(generate.body.transaction_details.gross_amount, 149000);
+  assert.equal(generate.body.transaction_details.order_id, order.data.order.id);
+  assert.equal(generate.body.payment_type, 'qris');
   const staticConfirm = await request(`/api/admin/orders/${order.data.order.id}/confirm-payment`, { method: 'POST', cookie: adminCookie, body: { transactionReference: 'MANUAL-123' } });
   assert.equal(staticConfirm.response.status, 410);
+  const pending = await request(`/api/orders/${order.data.order.id}/check-payment`, { method: 'POST', cookie: buyerCookie, body: {} });
+  assert.equal(pending.data.order.paymentStatus, 'pending');
+  assert.ok(midtransRequests.some((entry) => entry.method === 'GET' && entry.path === `/v2/${order.data.order.id}/status`));
 
-  const finishedAt = new Date();
-  const callbackTimestamp = `${new Date(finishedAt.getTime() + 7 * 60 * 60 * 1000).toISOString().slice(0, 19)}+07:00`;
-  const callback = {
-    originalPartnerReferenceNo: order.data.order.id,
-    originalReferenceNo: 'DANA-FINISHED-001',
-    merchantId: 'merchant-test',
-    amount: { value: '149000.00', currency: 'IDR' },
-    latestTransactionStatus: '00',
-    createdTime: callbackTimestamp,
-    finishedTime: callbackTimestamp,
-  };
-  const callbackRaw = JSON.stringify(callback);
-  const callbackDigest = crypto.createHash('sha256').update(callbackRaw).digest('hex');
-  const callbackText = `POST:/api/payments/dana/notify:${callbackDigest}:${callbackTimestamp}`;
-  const signature = crypto.sign('RSA-SHA256', Buffer.from(callbackText), danaPrivateKey).toString('base64');
-  const notified = await request('/api/payments/dana/notify', { method: 'POST', body: callback, headers: { 'x-timestamp': callbackTimestamp, 'x-signature': signature } });
+  const callback = { order_id: order.data.order.id, status_code: '200', gross_amount: '149000.00', currency: 'IDR', transaction_status: 'settlement', transaction_id: 'MTX-SETTLED-002', merchant_id: 'merchant-test', fraud_status: 'accept' };
+  callback.signature_key = crypto.createHash('sha512').update(`${callback.order_id}${callback.status_code}${callback.gross_amount}test-server-key`).digest('hex');
+  const invalid = await request('/api/payments/notify', { method: 'POST', body: { ...callback, signature_key: 'invalid' } });
+  assert.equal(invalid.response.status, 401);
+  const stillPending = await request(`/api/orders/${order.data.order.id}`, { cookie: buyerCookie });
+  assert.equal(stillPending.data.order.paymentStatus, 'pending');
+  const notified = await request('/api/payments/notify', { method: 'POST', body: callback });
   assert.equal(notified.response.status, 200);
-  assert.equal(notified.data.responseCode, '2005600');
   const paidOrder = await request(`/api/orders/${order.data.order.id}`, { cookie: buyerCookie });
   assert.equal(paidOrder.data.order.paymentStatus, 'paid');
+  const resellerSession = await request('/api/auth/session', { cookie: buyerCookie });
+  assert.equal(resellerSession.data.user.resellerPlan, true);
+});
+
+test('admin-managed stock reserves pending orders and decreases after Midtrans confirms payment', async () => {
+  const product = {
+    id: 'stock-managed', slug: 'stock-managed', name: 'Produk stok terbatas', category: 'ai', price: 25000,
+    resellerPrice: null, bulkMinimum: null, duration: '1 bulan', fulfillment: 'Aktivasi digital',
+    description: 'Produk untuk memastikan stok dicatat saat pembayaran terkonfirmasi.', terms: {}, stock: 5,
+    createdAt: '2026-09-29', orderMode: 'ready', preOrderConfirmed: true, image: '',
+  };
+  const created = await request('/api/admin/products', { method: 'POST', cookie: adminCookie, body: { product } });
+  assert.equal(created.response.status, 201);
+  const registration = await request('/api/auth/register', {
+    method: 'POST', body: { name: 'Stok Buyer', email: 'stock@example.test', password: 'BuyerPass123!' },
+  });
+  const buyerCookie = cookieFrom(registration.response);
+  const order = await request('/api/orders', {
+    method: 'POST', cookie: buyerCookie, body: { items: [{ id: product.id, quantity: 3 }] },
+  });
+  assert.equal(order.response.status, 201);
+  const reserved = await request('/api/products');
+  assert.equal(reserved.data.products.find((entry) => entry.id === product.id).stockAvailable, 2);
+  const adminReserved = await request('/api/admin/products', { cookie: adminCookie });
+  const adminProduct = adminReserved.data.products.find((entry) => entry.id === product.id);
+  assert.equal(adminProduct.stock, 5);
+  assert.equal(adminProduct.stockAvailable, 2);
+
+  midtransStatus = 'settlement';
+  const paid = await request(`/api/orders/${order.data.order.id}/check-payment`, { method: 'POST', cookie: buyerCookie, body: {} });
+  midtransStatus = 'pending';
+  assert.equal(paid.response.status, 200);
+  assert.equal(paid.data.order.paymentStatus, 'paid');
+  const afterPayment = await request('/api/products');
+  const updated = afterPayment.data.products.find((entry) => entry.id === product.id);
+  assert.equal(updated.stock, 2);
+  assert.equal(updated.stockAvailable, 2);
 });
 
 test('verified paid bulk order permanently unlocks only its product reseller price', async () => {
+  midtransStatus = 'pending';
   const product = {
     id: 'bulk-item', slug: 'bulk-item', name: 'Bulk Item', category: 'ai', price: 10000,
     resellerPrice: 7000, bulkMinimum: 3, duration: '1 bulan', fulfillment: 'Kode digital',
@@ -284,15 +457,13 @@ test('verified paid bulk order permanently unlocks only its product reseller pri
   const unverified = await request(`/api/orders/${pendingOrder.data.order.id}/check-payment`, { method: 'POST', cookie: buyerCookie, body: {} });
   assert.equal(unverified.response.status, 200);
   assert.equal(unverified.data.order.paymentStatus, 'pending');
-  const query = danaRequests.find((entry) => entry.path === '/rest/v1.1/debit/status');
-  const queryTimestamp = query.headers['x-timestamp'];
-  const queryDigest = crypto.createHash('sha256').update(JSON.stringify(query.body)).digest('hex');
-  const querySignatureBase = `POST:/rest/v1.1/debit/status:${queryDigest}:${queryTimestamp}`;
-  assert.equal(crypto.verify('RSA-SHA256', Buffer.from(querySignatureBase), danaPublicKey, Buffer.from(query.headers['x-signature'], 'base64')), true);
+  const query = midtransRequests.find((entry) => entry.method === 'GET' && entry.path === `/v2/${pendingOrder.data.order.id}/status`);
+  assert.ok(query, 'status checks are made directly to the payment API');
+  assert.equal(query.headers.authorization, `Basic ${Buffer.from('test-server-key:').toString('base64')}`);
 
-  danaStatus = '00';
+  midtransStatus = 'settlement';
   const confirmed = await request(`/api/orders/${pendingOrder.data.order.id}/check-payment`, { method: 'POST', cookie: buyerCookie, body: {} });
-  danaStatus = '01';
+  midtransStatus = 'pending';
   assert.equal(confirmed.response.status, 200);
   assert.equal(confirmed.data.order.paymentStatus, 'paid');
 
@@ -373,9 +544,9 @@ test('verified reseller plan unlocks every configured reseller price permanently
   assert.equal(myOrders.data.orders[0].id, order.data.order.id);
   assert.equal(myOrders.data.orders[0].paymentStatus, 'pending');
 
-  danaStatus = '00';
+  midtransStatus = 'settlement';
   const paid = await request(`/api/orders/${order.data.order.id}/check-payment`, { method: 'POST', cookie: buyerCookie, body: {} });
-  danaStatus = '01';
+  midtransStatus = 'pending';
   assert.equal(paid.response.status, 200);
   const session = await request('/api/auth/session', { cookie: buyerCookie });
   assert.equal(session.data.user.resellerPlan, true);

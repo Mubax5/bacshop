@@ -1,2 +1,0 @@
-"use client";
-export default function AdminError({ reset }: { error: Error & { digest?: string }; reset: () => void }) { return <main className="admin-page"><section className="admin-empty"><h1>Admin Center belum siap</h1><p>Data operasional belum dapat dimuat. Coba lagi tanpa meninggalkan konteks Admin Center.</p><button className="button button--primary" onClick={() => reset()}>Coba lagi</button></section></main>; }

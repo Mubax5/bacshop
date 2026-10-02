@@ -1,1 +1,0 @@
-export default function AdminLoading() { return <main className="admin-page"><div className="admin-loading-banner" /><div className="admin-loading-layout"><div className="admin-loading-nav" /><div className="admin-loading-content"><div /><div /><div /></div></div></main>; }
