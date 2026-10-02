@@ -62,6 +62,7 @@ const sessions = new Map();
 const userSessions = new Map();
 const loginAttempts = new Map();
 const userLoginAttempts = new Map();
+const paymentCreationLocks = new Set();
 if (setupCode) {
   console.log('\nBacshop admin first setup');
   console.log(`Open http://${HOST}:${PORT}/#/admin and enter this one-time code:`);
@@ -164,12 +165,20 @@ const MIDTRANS_HTTP_STATUS = Symbol('midtransHttpStatus');
 
 async function midtransRequest(method, pathname, body, config = midtransConfig()) {
   if (!config) throw Object.assign(new Error('Pembayaran QRIS dinamis belum dikonfigurasi. Admin perlu mengatur Server Key di environment server.'), { status: 503 });
-  const response = await fetch(`${config.baseUrl}${pathname}`, {
-    method,
-    headers: { Accept: 'application/json', Authorization: midtransAuthorization(config), ...(body ? { 'Content-Type': 'application/json' } : {}) },
-    ...(body ? { body: JSON.stringify(body) } : {}),
-    signal: AbortSignal.timeout(8000),
-  });
+  let response;
+  try {
+    response = await fetch(`${config.baseUrl}${pathname}`, {
+      method,
+      headers: { Accept: 'application/json', Authorization: midtransAuthorization(config), ...(body ? { 'Content-Type': 'application/json' } : {}) },
+      ...(body ? { body: JSON.stringify(body) } : {}),
+      signal: AbortSignal.timeout(8000),
+    });
+  } catch (error) {
+    const detail = error?.name === 'TimeoutError' || error?.name === 'AbortError'
+      ? 'Koneksi pembayaran melewati batas waktu. Coba buat QRIS lagi.'
+      : 'Server tidak dapat terhubung ke Midtrans. Periksa koneksi lalu coba lagi.';
+    throw Object.assign(new Error(detail), { status: 502 });
+  }
   let result;
   try { result = await response.json(); } catch { throw Object.assign(new Error('Respons pembayaran tidak dapat dibaca.'), { status: 502 }); }
   if (result && typeof result === 'object') Object.defineProperty(result, MIDTRANS_HTTP_STATUS, { value: response.status });
@@ -177,6 +186,8 @@ async function midtransRequest(method, pathname, body, config = midtransConfig()
     console.error('Payment API rejected request:', JSON.stringify({ httpStatus: response.status, code: result.status_code || 'unknown', message: result.status_message || '' }));
     const detail = response.status === 401
       ? 'Koneksi QRIS ditolak. Periksa kecocokan Server Key dan mode akun Midtrans di server.'
+      : response.status === 402
+        ? 'Kanal QRIS dinamis belum diaktifkan untuk Core API akun Midtrans ini. Minta aktivasi QRIS dinamis untuk mode akun yang sedang dipakai.'
       : response.status === 400
         ? 'Midtrans menolak pesanan. Pastikan kanal QRIS aktif dan nominal pesanan memenuhi ketentuan akun.'
         : 'QRIS belum dapat diproses. Coba lagi beberapa saat.';
@@ -369,6 +380,11 @@ function validEmail(value) {
   return typeof value === 'string' && value.length <= 254 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
 }
 
+function publicOrder(order) {
+  const { paymentQrString, paymentQrActions, ...visible } = order;
+  return visible;
+}
+
 function publicUser(user) {
   const cms = readStorefront();
   const productIds = Array.isArray(user.productEntitlements) ? user.productEntitlements : [];
@@ -407,6 +423,28 @@ function publicProduct(product, user) {
   return { ...retailProduct, priceContext: 'retail' };
 }
 
+function resolveSpecifications(product, selection) {
+  const requested = selection && typeof selection === 'object' && !Array.isArray(selection) ? selection : {};
+  const specifications = Array.isArray(product.specifications) ? product.specifications : [];
+  const allowedIds = new Set(specifications.map((specification) => specification.id));
+  if (Object.keys(requested).some((id) => !allowedIds.has(id))) return { error: 'Pilihan produk sudah berubah. Pilih spesifikasi lagi.' };
+  let adjustment = 0;
+  const snapshot = [];
+  for (const specification of specifications) {
+    const value = requested[specification.id];
+    if (!value && specification.required !== false) return { error: `Pilih ${specification.name} terlebih dahulu.` };
+    if (!value) continue;
+    if (!Array.isArray(specification.options)) return { error: 'Pilihan produk belum dikonfigurasi dengan benar.' };
+    const option = specification.options.find((entry) => entry.value === value);
+    if (!option) return { error: `Pilihan ${specification.name} sudah tidak tersedia. Muat ulang produk.` };
+    adjustment += Number(option.priceAdjustment) || 0;
+    snapshot.push({ id: specification.id, name: specification.name, value: option.value, label: option.label });
+  }
+  const unitPrice = Number(product.price) + adjustment;
+  if (!Number.isSafeInteger(unitPrice) || unitPrice < 1 || unitPrice > 100000000) return { error: 'Harga pilihan produk tidak valid.' };
+  return { specifications: snapshot, unitPrice };
+}
+
 function requireAdmin(req) {
   return activeSession(req);
 }
@@ -429,7 +467,7 @@ function validateProduct(input, id, products) {
   if (input.stock !== null && input.stock !== '' && input.stock !== undefined && Number(input.stock) < reserved) return `Stok tidak bisa di bawah ${reserved} unit yang sedang menunggu pembayaran.`;
   if (input.resellerPrice !== null && input.resellerPrice !== '' && input.resellerPrice !== undefined) {
     if (!Number.isSafeInteger(Number(input.resellerPrice)) || Number(input.resellerPrice) < 1 || Number(input.resellerPrice) >= Number(input.price)) return 'Harga reseller harus lebih rendah dari harga retail.';
-    if (!Number.isSafeInteger(Number(input.bulkMinimum)) || Number(input.bulkMinimum) < 2 || Number(input.bulkMinimum) > 999) return 'Minimum pembelian reseller harus 2–999 unit.';
+    if (!Number.isSafeInteger(Number(input.bulkMinimum)) || Number(input.bulkMinimum) < 2 || Number(input.bulkMinimum) > 99) return 'Minimum pembelian reseller harus 2–99 unit.';
   }
   if (!/^\d{4}-\d{2}-\d{2}$/.test(input.createdAt) || Number.isNaN(Date.parse(input.createdAt))) return 'Tanggal produk harus memakai format YYYY-MM-DD.';
   if (!['ready', 'preorder'].includes(input.orderMode)) return 'Pilih status pesanan yang tersedia.';
@@ -437,6 +475,19 @@ function validateProduct(input, id, products) {
   if (!input.terms || typeof input.terms !== 'object' || Array.isArray(input.terms) || Object.keys(input.terms).length > 20) return 'Ketentuan produk tidak valid.';
   for (const [label, value] of Object.entries(input.terms)) {
     if (!label.trim() || label.length > 80 || typeof value !== 'string' || value.length > 500) return 'Periksa daftar ketentuan produk.';
+  }
+  if (!Array.isArray(input.specifications) || input.specifications.length > 8) return 'Spesifikasi produk harus berupa daftar, maksimal 8 pilihan.';
+  const specificationIds = new Set();
+  for (const specification of input.specifications) {
+    if (!specification || !/^[a-z0-9-]{1,48}$/.test(specification.id || '') || typeof specification.name !== 'string' || !specification.name.trim() || specification.name.length > 80 || specification.required !== undefined && typeof specification.required !== 'boolean' || !Array.isArray(specification.options) || !specification.options.length || specification.options.length > 30) return 'Periksa nama spesifikasi dan daftar pilihannya.';
+    if (specificationIds.has(specification.id)) return 'ID spesifikasi tidak boleh sama.';
+    specificationIds.add(specification.id);
+    const optionValues = new Set();
+    for (const option of specification.options) {
+      if (!option || !/^[a-z0-9-]{1,64}$/.test(option.value || '') || typeof option.label !== 'string' || !option.label.trim() || option.label.length > 100 || !Number.isSafeInteger(Number(option.priceAdjustment || 0)) || Number(option.priceAdjustment || 0) < -Number(input.price) + 1 || Number(option.priceAdjustment || 0) > 100000000) return 'Periksa label pilihan dan penyesuaian harganya.';
+      if (optionValues.has(option.value)) return 'Pilihan pada satu spesifikasi tidak boleh sama.';
+      optionValues.add(option.value);
+    }
   }
   if (products.some((product) => product.id !== id && product.slug === input.slug)) return 'URL produk sudah dipakai produk lain.';
   if (input.image && !safeAssetPath(input.image)) return 'Pilih gambar yang sudah diunggah.';
@@ -496,6 +547,7 @@ function normalizeProduct(input, id, products) {
     archived: Boolean(input.archived),
     resellerPrice: input.resellerPrice === '' || input.resellerPrice === null || input.resellerPrice === undefined ? null : Number(input.resellerPrice),
     bulkMinimum: input.resellerPrice === '' || input.resellerPrice === null || input.resellerPrice === undefined ? null : Number(input.bulkMinimum),
+    specifications: Array.isArray(input.specifications) ? input.specifications : [],
   };
   const error = validateProduct(product, id, products);
   return error ? { error } : { product };
@@ -505,7 +557,7 @@ function reservedProductQuantity(productId, excludeOrderId = '') {
   const now = Date.now();
   return readOrders().reduce((sum, order) => {
     if (order.id === excludeOrderId || order.kind !== 'products' || order.paymentStatus !== 'pending') return sum;
-    const expires = Date.parse(order.paymentExpiresAt || '');
+    const expires = Date.parse(order.paymentExpiresAt || order.reservationExpiresAt || '');
     if (Number.isFinite(expires) && expires <= now) return sum;
     return sum + (order.items || []).reduce((quantity, item) => quantity + (item.productId === productId ? Number(item.quantity) || 0 : 0), 0);
   }, 0);
@@ -566,10 +618,18 @@ function resellerEntitlementsFor(user, orders, products) {
   const qualifyingOrders = orders.filter((order) => order.userId === user.id && order.paymentStatus === 'paid' && order.status !== 'refunded' && order.kind === 'products');
   const entitled = new Set();
   for (const order of qualifyingOrders) {
-    for (const item of order.items) {
+    const totals = new Map();
+    for (const item of order.items || []) {
       const product = products.find((entry) => entry.id === item.productId);
       const minimum = item.bulkMinimumSnapshot ?? product?.bulkMinimum;
-      if (product && product.resellerPrice !== null && product.resellerPrice !== undefined && Number.isSafeInteger(Number(minimum)) && Number(minimum) >= 2 && item.quantity >= Number(minimum)) entitled.add(product.id);
+      const total = totals.get(item.productId) || { quantity: 0, minimum };
+      total.quantity += Number(item.quantity) || 0;
+      total.minimum = total.minimum ?? minimum;
+      totals.set(item.productId, total);
+    }
+    for (const [productId, total] of totals) {
+      const product = products.find((entry) => entry.id === productId);
+      if (product && product.resellerPrice !== null && product.resellerPrice !== undefined && Number.isSafeInteger(Number(total.minimum)) && Number(total.minimum) >= 2 && total.quantity >= Number(total.minimum)) entitled.add(product.id);
     }
   }
   return [...entitled];
@@ -601,6 +661,81 @@ function matchingMidtransPayment(order, payment) {
     && (!merchantId || !payment?.merchant_id || payment.merchant_id === merchantId)
     && (!payment?.currency || payment.currency === 'IDR')
     && Number.isFinite(amount) && amount === Number(order.total);
+}
+
+async function createOrderQris(order) {
+  const config = midtransConfig();
+  if (!config) throw Object.assign(new Error('QRIS dinamis belum dikonfigurasi. Isi MIDTRANS_SERVER_KEY dan mode akun di environment server.'), { status: 503 });
+  let payment;
+  if (order.midtransTransactionId) {
+    payment = await midtransRequest('GET', `/v2/${encodeURIComponent(order.id)}/status`, undefined, config);
+    if (payment.order_id !== order.id || !matchingMidtransPayment(order, payment)) throw Object.assign(new Error('Status QRIS yang ditemukan tidak cocok dengan pesanan.'), { status: 502 });
+    if (['settlement', 'capture'].includes(payment.transaction_status)) {
+      if (payment.status_code !== '200' || payment.fraud_status && payment.fraud_status !== 'accept') throw Object.assign(new Error('Pembayaran belum dapat diverifikasi.'), { status: 502 });
+      const result = savePaidOrder(order, 'QRIS otomatis', payment.transaction_id || order.id);
+      if (result.error) throw Object.assign(new Error(result.error), { status: 409 });
+      return result.order;
+    }
+    if (payment.transaction_status !== 'pending') throw Object.assign(new Error('QRIS untuk pesanan ini sudah tidak aktif. Buat pesanan baru untuk membayar.'), { status: 409 });
+  } else {
+    payment = await midtransRequest('POST', '/v2/charge', {
+      payment_type: 'qris',
+      transaction_details: { order_id: order.id, gross_amount: Number(order.total) },
+      qris: { acquirer: 'gopay' },
+    }, config);
+  }
+
+  if (String(payment.status_code) === '402' && /payment channel is not activated/i.test(String(payment.status_message || ''))) {
+    throw Object.assign(new Error('Kanal QRIS dinamis belum diaktifkan untuk Core API akun Midtrans ini. Minta aktivasi QRIS dinamis untuk mode akun yang sedang dipakai.'), { status: 502 });
+  }
+  const responseMatches = {
+    orderId: payment.order_id === order.id,
+    amount: Number(payment.gross_amount) === Number(order.total),
+    method: payment.payment_type === 'qris',
+    status: payment.transaction_status === 'pending',
+    accepted: ['200', '201'].includes(String(payment.status_code)),
+  };
+  const mismatches = Object.entries(responseMatches).filter(([, matches]) => !matches).map(([field]) => field);
+  if (mismatches.length) {
+    const labels = { orderId: 'ID pesanan', amount: 'nominal', method: 'metode QRIS', status: 'status transaksi', accepted: 'kode respons' };
+    throw Object.assign(new Error(`Respons Midtrans tidak cocok pada ${mismatches.map((field) => labels[field]).join(', ')}.`), { status: 502 });
+  }
+
+  const orders = readOrders();
+  const index = orders.findIndex((entry) => entry.id === order.id && entry.userId === order.userId);
+  if (index < 0 || orders[index].paymentStatus !== 'pending') throw Object.assign(new Error('Status pesanan sudah berubah. Muat ulang halaman pesanan.'), { status: 409 });
+  const imageSource = {
+    ...payment,
+    qr_string: payment.qr_string || order.paymentQrString || '',
+    actions: Array.isArray(payment.actions) && payment.actions.length ? payment.actions : order.paymentQrActions || [],
+  };
+  const initialized = {
+    ...orders[index],
+    paymentInitialized: true,
+    midtransTransactionId: payment.transaction_id || orders[index].midtransTransactionId || '',
+    midtransMerchantId: typeof payment.merchant_id === 'string' ? payment.merchant_id : orders[index].midtransMerchantId || '',
+    paymentExpiresAt: payment.expiry_time || orders[index].paymentExpiresAt || '',
+    paymentQrString: typeof imageSource.qr_string === 'string' && imageSource.qr_string.length <= 4096 ? imageSource.qr_string : '',
+    paymentQrActions: Array.isArray(imageSource.actions) ? imageSource.actions.filter((action) => ['generate-qr-code-v2', 'generate-qr-code'].includes(action?.name) && typeof action?.url === 'string').slice(0, 2) : [],
+  };
+  orders[index] = initialized;
+  saveOrders(orders);
+
+  const qrisImage = await midtransQrImage(imageSource, config);
+  const latestOrders = readOrders();
+  const latestIndex = latestOrders.findIndex((entry) => entry.id === order.id && entry.userId === order.userId);
+  if (latestIndex < 0 || latestOrders[latestIndex].paymentStatus !== 'pending') throw Object.assign(new Error('Status pesanan sudah berubah. Muat ulang halaman pesanan.'), { status: 409 });
+  latestOrders[latestIndex] = {
+    ...latestOrders[latestIndex],
+    qrisImage,
+    status: 'awaiting_payment',
+    paymentInstructions: 'Pindai QRIS ini menggunakan aplikasi pembayaran yang mendukung QRIS. Pastikan nominal sesuai sebelum membayar.',
+  };
+  delete latestOrders[latestIndex].paymentQrString;
+  delete latestOrders[latestIndex].paymentQrActions;
+  saveOrders(latestOrders);
+  saveAudit({ actor: 'Midtrans', action: 'qris_created', orderId: order.id, amount: order.total });
+  return latestOrders[latestIndex];
 }
 
 function savePaidOrder(order, provider, reference) {
@@ -647,14 +782,43 @@ async function handleApi(req, res, url) {
     const user = activeUser(req);
     if (!user) return json(res, 401, { error: 'Masuk untuk melihat pesanan.' });
     const orders = readOrders().filter((order) => order.userId === user.id).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-    return json(res, 200, { orders });
+    return json(res, 200, { orders: orders.map(publicOrder) });
   }
   const ownOrderMatch = url.pathname.match(/^\/api\/orders\/([A-Za-z0-9-]+)$/);
   if (req.method === 'GET' && ownOrderMatch) {
     const user = activeUser(req);
     if (!user) return json(res, 401, { error: 'Masuk untuk melihat pesanan.' });
     const order = readOrders().find((entry) => entry.id === ownOrderMatch[1] && entry.userId === user.id);
-    return order ? json(res, 200, { order }) : json(res, 404, { error: 'Pesanan tidak ditemukan.' });
+    return order ? json(res, 200, { order: publicOrder(order) }) : json(res, 404, { error: 'Pesanan tidak ditemukan.' });
+  }
+  const createQrisMatch = url.pathname.match(/^\/api\/orders\/([A-Za-z0-9-]+)\/create-qris$/);
+  if (req.method === 'POST' && createQrisMatch) {
+    const user = activeUser(req);
+    if (!user) return json(res, 401, { error: 'Masuk untuk membuat QRIS.' });
+    const order = readOrders().find((entry) => entry.id === createQrisMatch[1] && entry.userId === user.id);
+    if (!order) return json(res, 404, { error: 'Pesanan tidak ditemukan.' });
+    if (order.paymentStatus === 'paid' || order.paymentStatus === 'refunded' || order.qrisImage) return json(res, 200, { order: publicOrder(order) });
+    if (order.paymentStatus !== 'pending') return json(res, 409, { error: 'Pesanan ini sudah tidak dapat dibayar.' });
+    const reservationExpiry = Date.parse(order.reservationExpiresAt || '');
+    if (Number.isFinite(reservationExpiry) && reservationExpiry <= Date.now()) {
+      const orders = readOrders();
+      const index = orders.findIndex((entry) => entry.id === order.id && entry.userId === user.id);
+      if (index >= 0 && orders[index].paymentStatus === 'pending') {
+        orders[index] = { ...orders[index], paymentStatus: 'cancelled', status: 'cancelled', cancelledAt: new Date().toISOString() };
+        saveOrders(orders);
+      }
+      return json(res, 409, { error: 'Waktu konfirmasi pesanan habis. Silakan buat pesanan baru.' });
+    }
+    if (paymentCreationLocks.has(order.id)) return json(res, 409, { error: 'QRIS sedang dibuat. Tunggu sebentar lalu muat ulang pesanan.' });
+    paymentCreationLocks.add(order.id);
+    try {
+      const updated = await createOrderQris(order);
+      return json(res, 200, { order: publicOrder(updated) });
+    } catch (error) {
+      return json(res, error.status || 502, { error: error.message || 'QRIS belum dapat dibuat. Coba lagi beberapa saat.' });
+    } finally {
+      paymentCreationLocks.delete(order.id);
+    }
   }
   const checkPaymentMatch = url.pathname.match(/^\/api\/orders\/([A-Za-z0-9-]+)\/check-payment$/);
   if (req.method === 'POST' && checkPaymentMatch) {
@@ -662,7 +826,7 @@ async function handleApi(req, res, url) {
     if (!user) return json(res, 401, { error: 'Masuk untuk memeriksa pembayaran.' });
     const order = readOrders().find((entry) => entry.id === checkPaymentMatch[1] && entry.userId === user.id);
     if (!order) return json(res, 404, { error: 'Pesanan tidak ditemukan.' });
-    if (order.paymentStatus === 'paid' || order.paymentStatus === 'refunded') return json(res, 200, { order });
+    if (order.paymentStatus === 'paid' || order.paymentStatus === 'refunded') return json(res, 200, { order: publicOrder(order) });
     const config = midtransConfig();
     const payment = await midtransRequest('GET', `/v2/${encodeURIComponent(order.id)}/status`, undefined, config);
     if (payment.order_id !== order.id) return json(res, 502, { error: 'Status pembayaran tidak cocok dengan pesanan.' });
@@ -670,16 +834,16 @@ async function handleApi(req, res, url) {
       if (!matchingMidtransPayment(order, payment) || payment.status_code !== '200' || payment.fraud_status && payment.fraud_status !== 'accept') return json(res, 502, { error: 'Data pembayaran tidak cocok dengan nominal pesanan.' });
       const result = savePaidOrder(order, 'QRIS otomatis', payment.transaction_id || order.id);
       const updated = result.order || readOrders().find((entry) => entry.id === order.id);
-      return json(res, 200, { order: updated });
+      return json(res, 200, { order: publicOrder(updated) });
     }
     if (['expire', 'cancel', 'deny'].includes(payment.transaction_status) && order.paymentStatus === 'pending') {
       const orders = readOrders();
       const index = orders.findIndex((entry) => entry.id === order.id);
       orders[index] = { ...orders[index], paymentStatus: 'cancelled', status: 'cancelled', cancelledAt: new Date().toISOString() };
       saveOrders(orders);
-      return json(res, 200, { order: orders[index] });
+      return json(res, 200, { order: publicOrder(orders[index]) });
     }
-    return json(res, 200, { order, providerStatus: payment.transaction_status || 'pending' });
+    return json(res, 200, { order: publicOrder(order), providerStatus: payment.transaction_status || 'pending' });
   }
   if (req.method === 'GET' && url.pathname === '/api/admin/session') {
     const session = activeSession(req);
@@ -697,7 +861,7 @@ async function handleApi(req, res, url) {
   if (req.method === 'GET' && url.pathname === '/api/admin/orders') {
     if (!activeSession(req)) return json(res, adminAuthStatus(req), { error: 'Masuk sebagai admin untuk melanjutkan.' });
     const users = new Map(readUsers().map((user) => [user.id, user]));
-    const orders = readOrders().map((order) => ({ ...order, customer: users.has(order.userId) ? { name: users.get(order.userId).name, email: users.get(order.userId).email } : null }));
+    const orders = readOrders().map((order) => ({ ...publicOrder(order), customer: users.has(order.userId) ? { name: users.get(order.userId).name, email: users.get(order.userId).email } : null }));
     return json(res, 200, { orders });
   }
   if (req.method === 'GET' && url.pathname === '/api/admin/audit') {
@@ -782,8 +946,6 @@ async function handleApi(req, res, url) {
     const user = activeUser(req);
     if (!user) return json(res, 401, { error: 'Masuk sebelum membuat pesanan.' });
     const body = await readBody(req);
-    const config = midtransConfig();
-    if (!config) return json(res, 503, { error: 'QRIS dinamis belum siap. Admin perlu mengatur Server Key di environment server.' });
     const storefront = readStorefront();
     const products = readProducts();
     const now = new Date().toISOString();
@@ -802,107 +964,67 @@ async function handleApi(req, res, url) {
         const product = products.find((entry) => entry.id === requested?.id);
         const quantity = Number(requested?.quantity);
         if (!product || product.archived || !Number.isInteger(quantity) || quantity < 1 || quantity > 99 || product.orderMode === 'preorder' && !product.preOrderConfirmed) return json(res, 400, { error: 'Periksa produk, jumlah, atau ketersediaan stok di keranjang.' });
-        combined.set(product.id, (combined.get(product.id) || 0) + quantity);
+        const selection = resolveSpecifications(product, requested.specifications);
+        if (selection.error) return json(res, 400, { error: selection.error });
+        const key = product.id + ':' + JSON.stringify(selection.specifications.map((entry) => [entry.id, entry.value]));
+        const previous = combined.get(key);
+        const combinedQuantity = (previous?.quantity || 0) + quantity;
+        if (combinedQuantity > 99) return json(res, 400, { error: 'Jumlah satu pilihan produk maksimal 99 unit.' });
+        combined.set(key, { product, quantity: combinedQuantity, selection });
       }
-      for (const [productId, quantity] of combined) {
+      const stockByProduct = new Map();
+      for (const entry of combined.values()) {
+        const { product, quantity, selection } = entry;
+        stockByProduct.set(product.id, (stockByProduct.get(product.id) || 0) + quantity);
+        const eligible = userCanResell(user, product.id) && Number.isSafeInteger(Number(product.resellerPrice));
+        const adjustment = selection.unitPrice - Number(product.price);
+        const unitPrice = (eligible ? Number(product.resellerPrice) : Number(product.price)) + adjustment;
+        if (!Number.isSafeInteger(unitPrice) || unitPrice < 1) return json(res, 400, { error: 'Harga pilihan ' + product.name + ' tidak valid.' });
+        const lineTotal = unitPrice * quantity;
+        items.push({
+          productId: product.id,
+          name: product.name,
+          slug: product.slug,
+          quantity,
+          specifications: selection.specifications,
+          unitPrice,
+          priceContext: eligible ? 'reseller' : 'retail',
+          bulkMinimumSnapshot: product.bulkMinimum ?? null,
+          lineTotal,
+        });
+        total += lineTotal;
+      }
+      for (const [productId, quantity] of stockByProduct) {
         const product = products.find((entry) => entry.id === productId);
         const available = availableProductStock(product);
-        if (available !== null && quantity > available) return json(res, 409, { error: `Stok ${product.name} tersisa ${available} unit.` });
-        const eligible = userCanResell(user, productId);
-        const unitPrice = eligible && Number.isSafeInteger(Number(product.resellerPrice)) ? Number(product.resellerPrice) : Number(product.price);
-        items.push({ productId, name: product.name, slug: product.slug, quantity, unitPrice, priceContext: eligible ? 'reseller' : 'retail', bulkMinimumSnapshot: product.bulkMinimum ?? null, lineTotal: unitPrice * quantity });
-        total += unitPrice * quantity;
+        if (available !== null && quantity > available) return json(res, 409, { error: 'Stok ' + product.name + ' tersisa ' + available + ' unit.' });
       }
     }
     if (!Number.isSafeInteger(total) || total < 1 || total > 100000000) return json(res, 400, { error: 'Total pesanan tidak valid.' });
-    const orderId = `BC${Date.now().toString(36).toUpperCase()}${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
-    const qrPayload = {
-      payment_type: 'qris',
-      transaction_details: { order_id: orderId, gross_amount: Number(total) },
-      qris: { acquirer: 'gopay' },
-    };
+    const orderId = 'BC' + Date.now().toString(36).toUpperCase() + crypto.randomBytes(3).toString('hex').toUpperCase();
     const order = {
       id: orderId,
-      userId: user.id, kind, items, total, currency: 'IDR', createdAt: now,
-      paymentProvider: 'qris_dynamic', midtransMerchantId: '',
-      paymentStatus: 'pending', paidAt: null, status: 'creating_qris', fulfillmentStatus: 'not_started',
-      paymentInstructions: 'Pindai QR ini dengan aplikasi yang mendukung QRIS, lalu selesaikan pembayaran sebelum QR kedaluwarsa.',
+      userId: user.id,
+      kind,
+      items,
+      total,
+      currency: 'IDR',
+      createdAt: now,
+      paymentProvider: 'qris_dynamic',
+      midtransMerchantId: '',
+      paymentStatus: 'pending',
+      paidAt: null,
+      status: 'awaiting_payment',
+      fulfillmentStatus: 'not_started',
+      paymentInitialized: false,
+      reservationExpiresAt: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
+      paymentInstructions: 'Pesanan sudah dikonfirmasi. Informasi pembayaran akan tersedia pada tahap berikutnya.',
       resellerTerms: kind === 'reseller-plan' ? storefront.resellerPlan.terms : '',
     };
     const orders = readOrders();
     orders.push(order);
     saveOrders(orders);
-    let generatedQr;
-    let providerResponseMayHaveCreatedCharge = false;
-    let qrisImage;
-    try {
-      generatedQr = await midtransRequest('POST', '/v2/charge', qrPayload, config);
-      const providerHttpStatus = Number(generatedQr[MIDTRANS_HTTP_STATUS]);
-      const providerStatusCode = String(generatedQr.status_code || '');
-      providerResponseMayHaveCreatedCharge = providerHttpStatus >= 200 && providerHttpStatus < 300 && !/^4\d{2}$/.test(providerStatusCode);
-      const responseMatches = {
-        orderId: generatedQr.order_id === orderId,
-        amount: Number(generatedQr.gross_amount) === total,
-        method: generatedQr.payment_type === 'qris',
-        status: generatedQr.transaction_status === 'pending',
-        accepted: ['200', '201'].includes(String(generatedQr.status_code)),
-      };
-      const mismatches = Object.entries(responseMatches).filter(([, matches]) => !matches).map(([field]) => field);
-      if (mismatches.length) {
-        const statusMessage = typeof generatedQr.status_message === 'string'
-          ? generatedQr.status_message.replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/(?:SB-)?Mid-server-[A-Za-z0-9_-]+/gi, '[redacted]').slice(0, 180)
-          : '';
-        const responseFields = Object.keys(generatedQr).filter((key) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(key)).slice(0, 32);
-        const actionNames = Array.isArray(generatedQr.actions)
-          ? generatedQr.actions.map((action) => action?.name).filter((name) => typeof name === 'string' && /^[A-Za-z0-9_-]{1,48}$/.test(name)).slice(0, 12)
-          : [];
-        console.error('Midtrans QRIS charge response mismatch:', JSON.stringify({
-          httpStatus: generatedQr[MIDTRANS_HTTP_STATUS] ?? null,
-          statusCode: typeof generatedQr.status_code === 'string' || typeof generatedQr.status_code === 'number' ? String(generatedQr.status_code).slice(0, 16) : '',
-          statusMessage,
-          responseFields,
-          actionNames,
-          ...responseMatches,
-          merchantIdConfigured: Boolean(config.merchantId),
-          merchantIdMatches: !config.merchantId || !generatedQr.merchant_id || generatedQr.merchant_id === config.merchantId,
-          transactionIdPresent: Boolean(generatedQr.transaction_id),
-          qrStringPresent: Boolean(generatedQr.qr_string),
-        }));
-        if (providerStatusCode === '402' && /payment channel is not activated/i.test(String(generatedQr.status_message || ''))) {
-          throw Object.assign(new Error('Kanal QRIS GoPay belum aktif untuk Server Key ini. Pastikan QRIS aktif pada akun Production yang sama dengan MIDTRANS_SERVER_KEY di .env.'), { status: 502 });
-        }
-        const labels = { orderId: 'ID pesanan', amount: 'nominal', method: 'metode QRIS', status: 'status transaksi', accepted: 'kode respons' };
-        throw Object.assign(new Error(`Respons pembayaran Midtrans tidak cocok pada ${mismatches.map((field) => labels[field]).join(', ')}.`), { status: 502 });
-      }
-      if (config.merchantId && generatedQr.merchant_id && generatedQr.merchant_id !== config.merchantId) console.warn('MIDTRANS_MERCHANT_ID differs from the authenticated charge response; using the transaction merchant ID.');
-      order.midtransMerchantId = typeof generatedQr.merchant_id === 'string' ? generatedQr.merchant_id : '';
-      qrisImage = await midtransQrImage(generatedQr, config);
-    } catch (error) {
-      if (providerResponseMayHaveCreatedCharge) {
-        const savedOrders = readOrders();
-        const savedIndex = savedOrders.findIndex((entry) => entry.id === orderId);
-        if (savedIndex >= 0) savedOrders[savedIndex] = {
-          ...savedOrders[savedIndex], status: 'awaiting_payment',
-          midtransTransactionId: generatedQr.transaction_id || '',
-          midtransMerchantId: typeof generatedQr.merchant_id === 'string' ? generatedQr.merchant_id : '',
-          paymentExpiresAt: generatedQr.expiry_time || '',
-        };
-        saveOrders(savedOrders);
-        throw Object.assign(new Error('QRIS belum dapat ditampilkan. Periksa menu Pesanan sebelum mencoba lagi.'), { status: 502 });
-      } else {
-        saveOrders(readOrders().filter((entry) => entry.id !== orderId));
-      }
-      throw error;
-    }
-    order.status = 'awaiting_payment';
-    order.qrisImage = qrisImage;
-    order.midtransTransactionId = generatedQr.transaction_id || '';
-    order.midtransMerchantId = typeof generatedQr.merchant_id === 'string' ? generatedQr.merchant_id : '';
-    order.paymentExpiresAt = generatedQr.expiry_time || '';
-    const savedOrders = readOrders();
-    const savedIndex = savedOrders.findIndex((entry) => entry.id === orderId);
-    if (savedIndex >= 0) savedOrders[savedIndex] = order;
-    saveOrders(savedOrders);
+    saveAudit({ actor: user.email, action: 'order_confirmed', orderId, amount: total });
     return json(res, 201, { order });
   }
 

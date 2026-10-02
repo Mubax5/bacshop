@@ -14,15 +14,20 @@ function between(start, end) {
   return app.slice(from, to);
 }
 
-test('FAQ and reseller information pages reserve a compact right rail', () => {
+test('FAQ stays searchable and reseller access paths are clear without tabs', () => {
   const faq = between('function renderFaq()', 'function renderAuthPage(');
   const reseller = between("if (path === '/program-reseller')", "if (path === '/promo')");
   assert.match(faq, /class="info-layout info-layout-faq"/);
   assert.match(faq, /class="info-side-rail faq-side-rail"/);
-  assert.match(reseller, /class="info-layout info-layout-reseller"/);
-  assert.match(reseller, /class="info-side-rail reseller-side-rail"/);
-  assert.match(styles, /\.info-side-rail\s*\{[^}]*max-width:\s*280px/s);
-  assert.match(styles, /\.info-layout\s*\{[^}]*grid-template-columns:\s*minmax\(0,1fr\)\s+minmax\(230px,280px\)/s);
+  assert.match(faq, /data-faq-search/);
+  assert.match(faq, /data-faq-topic/);
+  assert.match(reseller, /class="page-panel reseller-program-page"/);
+  assert.match(reseller, /class="reseller-path-grid"/);
+  assert.match(reseller, /data-bulk-product-link/);
+  assert.match(reseller, /class="reseller-steps"/);
+  assert.doesNotMatch(reseller, /reseller-choice-tabs|reseller-choice-panel/);
+  assert.match(styles, /\.reseller-path-grid\s*\{[^}]*grid-template-columns:\s*repeat\(2/s);
+  assert.match(styles, /\.reseller-steps ol\s*\{[^}]*grid-template-columns:\s*repeat\(3/s);
 });
 
 test('privacy, personal-data, and service terms pages share the FAQ information layout', () => {

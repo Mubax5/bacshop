@@ -2,6 +2,7 @@
   'use strict';
 
   const CART_KEY = 'bacshop-public-cart-v1';
+  const CHECKOUT_OVERRIDE_KEY = 'bacshop-checkout-override-v1';
   let CATEGORIES = [
     { slug: 'ai', name: 'AI & Produktivitas' },
     { slug: 'streaming', name: 'Streaming' },
@@ -75,11 +76,16 @@
   const app = document.querySelector('#app');
   let STOREFRONT = { categories: CATEGORIES, banners: [], promotions: [], resellerPlan: { price: 149000, terms: '' }, payment: { provider: 'QRIS' } };
   let currentUser = null;
+  let adminPreviewMode = (() => {
+    try { return sessionStorage.getItem('bacshop.admin.preview') === 'true'; }
+    catch { return false; }
+  })();
   let toastTimer;
   let carouselTimer;
   let paymentPollTimer;
   let paymentPollInFlight = false;
   let cart = readCart();
+  let checkoutItemsOverride = readCheckoutOverride();
   let previewContext = null;
   let adminRouteFocusAfterNavigation = false;
 
@@ -108,8 +114,9 @@
       const valid = parsed.map((item) => {
         const product = PRODUCTS.find((entry) => entry.id === item?.id);
         const quantity = Number(item?.quantity);
-        return product && !(product.orderMode === 'preorder' && !product.preOrderConfirmed) && Number.isInteger(quantity) && quantity > 0 && quantity <= 99
-          ? { id: product.id, quantity }
+        const selection = product ? resolveClientSpecifications(product, item?.specifications) : null;
+        return product && selection && !(product.orderMode === 'preorder' && !product.preOrderConfirmed) && Number.isInteger(quantity) && quantity > 0 && quantity <= 99
+          ? { id: product.id, quantity, specifications: selection.values }
           : null;
       }).filter(Boolean);
       if (JSON.stringify(valid) !== JSON.stringify(parsed)) localStorage.setItem(CART_KEY, JSON.stringify(valid));
@@ -130,8 +137,67 @@
     updateCartCounts();
   }
 
+  function readCheckoutOverride() {
+    try {
+      const raw = sessionStorage.getItem(CHECKOUT_OVERRIDE_KEY);
+      const parsed = raw ? JSON.parse(raw) : null;
+      if (!Array.isArray(parsed)) return null;
+      const valid = parsed.map((item) => {
+        const product = PRODUCTS.find((entry) => entry.id === item?.id);
+        const quantity = Number(item?.quantity);
+        const selection = product ? resolveClientSpecifications(product, item?.specifications) : null;
+        return product && selection && Number.isInteger(quantity) && quantity > 0 && quantity <= 99
+          ? { id: product.id, quantity, specifications: selection.values }
+          : null;
+      }).filter(Boolean);
+      return valid.length ? valid : null;
+    } catch { return null; }
+  }
+
+  function writeCheckoutOverride(items) {
+    checkoutItemsOverride = items;
+    try {
+      if (items) sessionStorage.setItem(CHECKOUT_OVERRIDE_KEY, JSON.stringify(items));
+      else sessionStorage.removeItem(CHECKOUT_OVERRIDE_KEY);
+    } catch { /* A direct purchase can still continue for this page view. */ }
+  }
+
   function cartQuantity() {
     return cart.reduce((sum, item) => sum + item.quantity, 0);
+  }
+
+  function resolveClientSpecifications(product, requested = {}) {
+    if (!product || !requested || typeof requested !== 'object' || Array.isArray(requested)) return null;
+    const definitions = Array.isArray(product.specifications) ? product.specifications : [];
+    const definitionIds = new Set(definitions.map((definition) => definition.id));
+    if (Object.keys(requested).some((id) => !definitionIds.has(id))) return null;
+    const values = {};
+    const chosen = [];
+    let adjustment = 0;
+    for (const definition of definitions) {
+      const value = requested[definition.id];
+      if (!value) {
+        if (definition.required !== false) return null;
+        continue;
+      }
+      const option = (definition.options || []).find((entry) => entry.value === value);
+      if (!option) return null;
+      values[definition.id] = option.value;
+      adjustment += Number(option.priceAdjustment) || 0;
+      chosen.push({ name: definition.name, label: option.label });
+    }
+    return { values, chosen, unitPrice: Number(product.price) + adjustment };
+  }
+
+  function cartLineKey(item) {
+    const values = Object.entries(item.specifications || {}).sort(([first], [second]) => first.localeCompare(second));
+    return item.id + ':' + JSON.stringify(values);
+  }
+
+  function specificationSummary(product, selection = {}) {
+    return (resolveClientSpecifications(product, selection)?.chosen || [])
+      .map((item) => item.name + ': ' + item.label)
+      .join(' · ');
   }
 
   function updateCartCounts() {
@@ -141,23 +207,30 @@
     });
   }
 
-  function addToCart(id, quantity = 1) {
+  function addToCart(id, quantity = 1, specifications = {}) {
     const product = PRODUCTS.find((entry) => entry.id === id);
     if (!product) return;
     if (product.orderMode === 'preorder' && !product.preOrderConfirmed) {
       showToast('Hubungi admin dan tunggu konfirmasi stok sebelum memesan.');
       return;
     }
-    const existing = cart.find((item) => item.id === id);
+    const selection = resolveClientSpecifications(product, specifications);
+    if (!selection) {
+      showToast('Pilih spesifikasi produk sebelum menambahkan ke keranjang.');
+      return;
+    }
+    const item = { id, quantity: Math.max(1, Math.min(99, quantity)), specifications: selection.values };
+    const lineKey = cartLineKey(item);
+    const existing = cart.find((entry) => cartLineKey(entry) === lineKey);
     const next = existing
-      ? cart.map((item) => item.id === id ? { ...item, quantity: Math.min(99, item.quantity + quantity) } : item)
-      : [...cart, { id, quantity: Math.max(1, Math.min(99, quantity)) }];
+      ? cart.map((entry) => cartLineKey(entry) === lineKey ? { ...entry, quantity: Math.min(99, entry.quantity + item.quantity) } : entry)
+      : [...cart, item];
     writeCart(next);
     showToast(`${product.name} ditambahkan ke keranjang`);
   }
 
   function updateQuantity(id, amount) {
-    const next = cart.map((item) => item.id === id
+    const next = cart.map((item) => cartLineKey(item) === id
       ? { ...item, quantity: Math.max(1, Math.min(99, item.quantity + amount)) }
       : item);
     writeCart(next);
@@ -165,8 +238,9 @@
   }
 
   function removeFromCart(id) {
-    const product = PRODUCTS.find((entry) => entry.id === id);
-    writeCart(cart.filter((item) => item.id !== id));
+    const item = cart.find((entry) => cartLineKey(entry) === id);
+    const product = PRODUCTS.find((entry) => entry.id === item?.id);
+    writeCart(cart.filter((entry) => cartLineKey(entry) !== id));
     showToast(`${product?.name || 'Produk'} dihapus dari keranjang`);
     render();
   }
@@ -228,46 +302,47 @@
     const detailSlug = path.startsWith('/produk/') ? path.split('/')[2] : '';
     const detailProduct = PRODUCTS.find((product) => product.slug === safeDecode(detailSlug));
     const accountHref = currentUser ? '#/akun' : '#/masuk';
-    const accountControl = currentUser
+    const accountControl = adminPreviewMode
+      ? '<span class="admin-preview-user-label">Admin · pratinjau</span>'
+      : currentUser
       ? `<a class="account-link" href="#/akun">${avatarMark(currentUser)}<span class="account-link-copy"><strong>${escapeHtml(currentUser.name)}</strong><small>${currentUser.isReseller ? 'Reseller' : 'Akun'}</small></span></a>`
       : `<div class="auth-actions"><a class="button button-small" href="#/masuk">Masuk</a><a class="button button-primary button-small" href="#/daftar">Daftar</a></div>`;
-    return `<header class="site-header">
+    return `${adminPreviewMode ? '<div class="admin-preview-banner"><span><strong>Pratinjau toko</strong> · aksi pembelian dan akun dinonaktifkan.</span><a href="#/admin">Kembali ke admin</a></div>' : ''}<header class="site-header">
       <div class="header-main">
         <a class="brand" href="#/" aria-label="Bacshop beranda">Bacshop</a>
         ${headerSearch('desktop', query)}
         <div class="header-actions">
-          <a class="header-link" href="#/program-reseller">Program reseller</a>
-          <a class="icon-button" href="#/keranjang" aria-label="Keranjang belanja">${feather('shopping-cart')}<span class="cart-count" data-cart-count ${count ? '' : 'hidden'}>${count}</span></a>
+          ${adminPreviewMode ? '' : `<a class="header-link" href="#/program-reseller">Program reseller</a><a class="icon-button" href="#/keranjang" aria-label="Keranjang belanja">${feather('shopping-cart')}<span class="cart-count" data-cart-count ${count ? '' : 'hidden'}>${count}</span></a>`}
           ${accountControl}
         </div>
       </div>
       <div class="mobile-top">
         <a class="brand" href="#/" aria-label="Bacshop beranda">Bacshop</a>
-        <div class="mobile-tools"><a class="icon-button" href="#/keranjang" aria-label="Keranjang belanja">${feather('shopping-cart')}<span class="cart-count" data-cart-count ${count ? '' : 'hidden'}>${count}</span></a><a class="mobile-account-link" href="${accountHref}" aria-label="${currentUser ? `Akun ${escapeHtml(currentUser.name)}` : 'Masuk atau daftar'}">${currentUser ? avatarMark(currentUser) : feather('user')}</a></div>
+        ${adminPreviewMode ? '' : `<div class="mobile-tools"><a class="icon-button" href="#/keranjang" aria-label="Keranjang belanja">${feather('shopping-cart')}<span class="cart-count" data-cart-count ${count ? '' : 'hidden'}>${count}</span></a><a class="mobile-account-link" href="${accountHref}" aria-label="${currentUser ? `Akun ${escapeHtml(currentUser.name)}` : 'Masuk atau daftar'}">${currentUser ? avatarMark(currentUser) : feather('user')}</a></div>`}
       </div>
       <div class="mobile-search-row">${headerSearch('mobile', query)}</div>
     </header>
     <main class="page-container" id="main" tabindex="-1">${content}</main>
-    ${detailProduct ? `<div class="mobile-purchase"><div><small>${detailProduct.priceContext === 'reseller' ? 'Harga reseller' : 'Harga retail'}</small><strong>${rupiah(detailProduct.price)}</strong></div>${detailProduct.orderMode === 'preorder' && !detailProduct.preOrderConfirmed ? `<span class="button button-disabled" aria-disabled="true">Stok dikonfirmasi sebelum pesan</span>` : `<button class="button button-primary" type="button" data-add-to-cart="${detailProduct.id}">Tambah ke keranjang</button>`}</div>` : ''}
+    ${detailProduct ? `<div class="mobile-purchase"><div><small>${detailProduct.priceContext === 'reseller' ? 'Harga reseller' : 'Harga retail'}</small><strong>${rupiah(detailProduct.price)}</strong></div>${adminPreviewMode ? '<span class="button button-disabled" aria-disabled="true">Mode pratinjau</span>' : detailProduct.stockAvailable === 0 ? '<span class="button button-disabled" aria-disabled="true">Stok habis</span>' : detailProduct.orderMode === 'preorder' && !detailProduct.preOrderConfirmed ? `<span class="button button-disabled" aria-disabled="true">Stok dikonfirmasi sebelum pesan</span>` : `<button class="button button-primary" type="button" data-purchase-open="${detailProduct.id}" data-purchase-mode="buy">Beli sekarang</button>`}</div>` : ''}
     <footer class="site-footer"><div class="footer-inner">
       <div class="footer-brand-col"><a class="brand footer-brand" href="#/">Bacshop</a><p class="footer-summary">Periksa detail produk dan ketentuan sebelum membeli.</p></div>
       <div class="footer-col"><h3>Belanja</h3><a href="#/kategori/semua">Semua produk</a><a href="#/kategori/ai">AI & produktivitas</a><a href="#/kategori/streaming">Streaming</a><a href="#/promo">Promo</a></div>
       <div class="footer-col"><h3>Bacshop</h3><a href="#/program-reseller">Program reseller</a><a href="#/faq">FAQ</a><a href="#/privasi">Kebijakan privasi</a><a href="#/ketentuan-layanan">Ketentuan layanan</a><a href="https://t.me/Mubacs" target="_blank" rel="noopener noreferrer">Bantuan · Telegram @Mubacs</a></div>
       <div class="footer-col"><h3>Akun</h3><a href="#/akun">Profil</a><a href="#/pesanan">Pesanan</a><a href="#/keranjang">Keranjang</a><a href="#/masuk">Masuk</a></div>
     </div><div class="footer-bottom"><span>© Bacshop</span><span>Periksa detail produk dan ketentuan sebelum membayar.</span></div></footer>
-    <nav class="mobile-bottom" aria-label="Navigasi mobile">
+    ${adminPreviewMode ? `<nav class="mobile-bottom admin-preview-bottom" aria-label="Navigasi pratinjau"><a class="mobile-nav-link" href="#/kategori/semua">${feather('grid')}<span>Belanja</span></a><a class="mobile-nav-link" href="#/admin">${feather('arrow-right')}<span>Kembali ke admin</span></a></nav>` : `<nav class="mobile-bottom" aria-label="Navigasi mobile">
       <a class="mobile-nav-link" href="#/"${activeNav(path, 'Beranda')}>${feather('home')}<span>Beranda</span></a>
       <a class="mobile-nav-link" href="#/kategori/semua"${activeNav(path, 'Belanja')}>${feather('grid')}<span>Belanja</span></a>
       <a class="mobile-nav-link" href="#/promo"${activeNav(path, 'Promo')}>${feather('tag')}<span>Promo</span></a>
       <a class="mobile-nav-link" href="${currentUser ? '#/akun' : '#/masuk'}"${activeNav(path, 'Akun')}>
         ${currentUser ? avatarMark(currentUser) : feather('user')}<span>${currentUser ? 'Akun' : 'Masuk'}</span></a>
-    </nav>`;
+    </nav>`}`;
   }
 
   function setCartQuantity(id, value) {
     const numeric = Number(value);
     const quantity = Number.isFinite(numeric) ? Math.max(1, Math.min(99, Math.floor(numeric))) : 1;
-    writeCart(cart.map((item) => item.id === id ? { ...item, quantity } : item));
+    writeCart(cart.map((item) => cartLineKey(item) === id ? { ...item, quantity } : item));
     render();
   }
 
@@ -285,6 +360,7 @@
   function productCard(product, options = {}) {
     const category = CATEGORIES.find((entry) => entry.slug === product.category);
     const needsStockConfirmation = product.orderMode === 'preorder' && !product.preOrderConfirmed;
+    const outOfStock = product.stockAvailable !== null && product.stockAvailable !== undefined && Number(product.stockAvailable) === 0;
     if (options.variant === 'admin') {
       const archived = Boolean(product.archived);
       const availableStock = product.stockAvailable ?? product.stock;
@@ -314,8 +390,16 @@
           <div class="product-card-footer"><span class="fulfillment"><span class="fulfillment-dot"></span>${escapeHtml(product.fulfillment)}</span></div>
         </div>
       </a>
-      <div class="product-card-actions"><a class="button button-primary product-detail-button" href="#/produk/${encodeURIComponent(product.slug)}">Detail</a>${needsStockConfirmation ? `<button class="button cart-icon-button" type="button" disabled aria-label="Stok ${escapeHtml(product.name)} belum dikonfirmasi">${feather('shopping-cart')}</button>` : `<button class="button cart-icon-button" type="button" data-add-to-cart="${product.id}" aria-label="Tambah ${escapeHtml(product.name)} ke keranjang">${feather('shopping-cart')}</button>`}</div>
+      <div class="product-card-actions"><a class="button button-primary product-detail-button" href="#/produk/${encodeURIComponent(product.slug)}">Detail</a>${adminPreviewMode || needsStockConfirmation || outOfStock ? `<button class="button cart-icon-button" type="button" disabled aria-label="${adminPreviewMode ? 'Mode pratinjau' : outOfStock ? 'Stok habis' : 'Stok belum dikonfirmasi'}">${feather('shopping-cart')}</button>` : `<button class="button cart-icon-button" type="button" data-purchase-open="${product.id}" data-purchase-mode="cart" aria-label="Pilih spesifikasi ${escapeHtml(product.name)}">${feather('shopping-cart')}</button>`}</div>
     </article>`;
+  }
+
+  function purchaseDialogMarkup(product, mode, quantity) {
+    const specifications = (product.specifications || []).map((specification) => `<label class="purchase-specification-field"><span>${escapeHtml(specification.name)}</span><select name="${escapeHtml(specification.id)}" data-purchase-specification="${escapeHtml(specification.id)}" ${specification.required === false ? '' : 'required'}>${specification.required === false ? '<option value="">Tanpa pilihan</option>' : '<option value="">Pilih terlebih dahulu</option>'}${(specification.options || []).map((option) => `<option value="${escapeHtml(option.value)}">${escapeHtml(option.label)}${Number(option.priceAdjustment) ? ` · ${Number(option.priceAdjustment) > 0 ? '+' : ''}${rupiah(Number(option.priceAdjustment))}` : ''}</option>`).join('')}</select></label>`).join('');
+    const available = product.stockAvailable === null || product.stockAvailable === undefined ? 99 : Math.max(0, Number(product.stockAvailable));
+    const safeQuantity = Math.max(1, Math.min(99, Number(quantity) || 1, available || 1));
+    const action = mode === 'buy' ? 'Beli sekarang' : 'Tambah ke keranjang';
+    return `<form class="product-purchase-form" data-purchase-form><header class="product-purchase-header"><div><span class="product-category">${escapeHtml(CATEGORIES.find((category) => category.slug === product.category)?.name || 'Produk digital')}</span><h2 id="purchase-dialog-title">Atur pesanan</h2><p>${escapeHtml(product.name)}</p></div><button class="icon-button" type="button" data-close-purchase aria-label="Tutup">${feather('x')}</button></header><div class="product-purchase-fields">${specifications || '<p class="purchase-no-specification">Produk ini tidak memiliki pilihan varian. Tentukan jumlah yang ingin dipesan.</p>'}<label class="purchase-quantity-field"><span>Jumlah</span><input type="number" min="1" max="${Math.max(1, Math.min(99, available || 99))}" value="${safeQuantity}" inputmode="numeric" data-purchase-quantity required /></label></div><div class="purchase-price-preview"><span>Harga per item</span><strong data-purchase-price>${rupiah(product.price)}</strong></div><p class="purchase-selection-error" data-purchase-error role="status" aria-live="polite" hidden></p><footer class="product-purchase-actions"><button class="button" type="button" data-close-purchase>Batal</button><button class="button button-primary" type="submit" data-purchase-submit>${action}</button></footer></form>`;
   }
 
   function categoryLinks() {
@@ -443,20 +527,27 @@
       </div></div></section>${advancedFilterDialog(validCategory, params)}`;
   }
 
-  function renderDetail(slug) {
+  function renderDetail(slug, params = new URLSearchParams()) {
     const product = PRODUCTS.find((item) => item.slug === safeDecode(slug || ''));
     if (!product) return null;
     const needsStockConfirmation = product.orderMode === 'preorder' && !product.preOrderConfirmed;
-    const purchaseAction = needsStockConfirmation
+    const outOfStock = product.stockAvailable !== null && product.stockAvailable !== undefined && Number(product.stockAvailable) === 0;
+    const bulkQuantity = Number(product.bulkUnlockQuantity) || 1;
+    const requestedQuantity = Math.max(1, Math.min(99, Number(params.get('qty')) || bulkQuantity));
+    const purchaseAction = outOfStock
+      ? `<button class="button button-disabled" type="button" disabled>Stok habis</button>`
+      : needsStockConfirmation
       ? `<button class="button button-disabled" type="button" disabled>Stok dikonfirmasi sebelum pesan</button>`
-      : `<button class="button button-primary" type="button" data-add-to-cart="${product.id}">Tambah ke keranjang</button>`;
+      : adminPreviewMode
+        ? '<span class="button button-disabled" aria-disabled="true">Mode pratinjau</span>'
+        : `<button class="button button-primary" type="button" data-purchase-open="${product.id}" data-purchase-mode="buy" data-default-quantity="${params.get('bulk') === '1' ? requestedQuantity : 1}">Beli sekarang</button><button class="button" type="button" data-purchase-open="${product.id}" data-purchase-mode="cart" data-default-quantity="${params.get('bulk') === '1' ? requestedQuantity : 1}">Tambah ke keranjang</button>`;
     const category = CATEGORIES.find((item) => item.slug === product.category) || { name: 'Produk digital' };
     const terms = Object.entries(product.terms || {}).map(([label, value]) => `<li><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></li>`).join('');
     const bulkNote = product.bulkUnlockQuantity ? `<p class="bulk-unlock-note">Beli ${product.bulkUnlockQuantity} unit dalam satu pesanan yang lunas untuk membuka harga reseller produk ini secara permanen.</p>` : '';
     return `<nav class="breadcrumbs" aria-label="Breadcrumb"><a href="#/">Beranda</a><span aria-hidden="true">›</span><a href="#/kategori/${product.category}">${escapeHtml(category.name)}</a><span aria-hidden="true">›</span><span>${escapeHtml(product.name)}</span></nav>
       <section class="page-panel"><div class="detail-layout"><div>${productArt(product, true)}</div><div class="detail-summary"><span class="product-category">${escapeHtml(category.name)}</span><h1>${escapeHtml(product.name)}</h1><div class="detail-meta"><span class="meta-pill">${escapeHtml(product.duration)}</span><span class="meta-pill">${escapeHtml(product.fulfillment)}</span>${product.orderMode === 'preorder' ? `<span class="meta-pill">${needsStockConfirmation ? 'Pre-order · menunggu konfirmasi stok' : 'Stok dikonfirmasi admin'}</span>` : ''}</div>
         <div class="detail-price-box"><small>Harga ${product.priceContext === 'reseller' ? 'reseller' : 'retail'}</small><strong class="detail-price">${rupiah(product.price)}</strong></div>${bulkNote}
-        <div class="detail-actions">${purchaseAction}<a class="button" href="#/keranjang">Lihat keranjang</a></div>
+        <div class="detail-actions">${purchaseAction}</div>
         <ul class="term-list" aria-label="Informasi produk">${terms}</ul><p class="detail-description">${escapeHtml(product.description)}</p></div></div></section>
       <section class="section">${sectionHead('Pilihan lainnya','Jelajahi produk lain dari toko.') }<div class="product-grid">${PRODUCTS.filter((item) => item.id !== product.id).slice(0, 5).map(productCard).join('')}</div></section>`;
   }
@@ -466,7 +557,7 @@
   }
 
   function checkoutStepsMarkup(activeStep, finished = false) {
-    const labels = ['Keranjang', 'Pembayaran', 'Konfirmasi'];
+    const labels = ['Keranjang', 'Konfirmasi', 'Pembayaran'];
     return `<ol class="checkout-steps" aria-label="Tahap pesanan">${labels.map((label, index) => {
       const step = index + 1;
       const complete = finished || step < activeStep;
@@ -510,28 +601,40 @@
   function renderCartPage() {
     const availableCart = cart.filter((item) => {
       const product = PRODUCTS.find((entry) => entry.id === item.id);
-      return product && !(product.orderMode === 'preorder' && !product.preOrderConfirmed);
+      return product && resolveClientSpecifications(product, item.specifications) && !(product.orderMode === 'preorder' && !product.preOrderConfirmed);
     });
     if (availableCart.length !== cart.length) writeCart(availableCart);
-    const rows = availableCart.map((item) => ({ ...item, product: PRODUCTS.find((product) => product.id === item.id) })).filter((item) => item.product);
-    const total = rows.reduce((sum, item) => sum + item.product.price * item.quantity, 0);
+    const rows = availableCart.map((item) => {
+      const product = PRODUCTS.find((entry) => entry.id === item.id);
+      const selection = resolveClientSpecifications(product, item.specifications);
+      return product ? { ...item, product, lineKey: cartLineKey(item), unitPrice: selection.unitPrice, specificationText: selection.chosen.map((entry) => entry.name + ': ' + entry.label).join(' · ') } : null;
+    }).filter(Boolean);
+    const total = rows.reduce((sum, item) => sum + item.unitPrice * item.quantity, 0);
     if (!rows.length) return `<nav class="breadcrumbs" aria-label="Breadcrumb"><a href="#/">Beranda</a><span aria-hidden="true">›</span><span>Keranjang</span></nav><section class="page-panel"><div class="page-heading"><h1>Keranjangmu</h1><p>Produk yang kamu pilih akan tersimpan di browser ini.</p></div><div class="empty-state"><h3>Keranjang masih kosong</h3><p>Jelajahi katalog dan tambahkan produk yang kamu butuhkan.</p><a class="button button-primary button-small" href="#/kategori/semua">Jelajahi produk</a></div></section>`;
-    return `<nav class="breadcrumbs" aria-label="Breadcrumb"><a href="#/">Beranda</a><span aria-hidden="true">›</span><span>Keranjang</span></nav><section class="page-panel"><div class="page-heading"><h1>Keranjangmu</h1><p>Periksa jumlah dan harga setiap produk sebelum membuat pesanan.</p></div>${checkoutStepsMarkup(1)}<div class="cart-layout"><div class="cart-list">${rows.map(({ product, quantity }) => `<article class="cart-row"><div class="cart-thumb ${product.image ? 'product-media' : 'image-placeholder'}" ${product.image ? `style="background-image:url('${escapeHtml(product.image)}')"` : ''} role="img" aria-label="Gambar ${escapeHtml(product.name)}"></div><div><h2><a href="#/produk/${product.slug}">${escapeHtml(product.name)}</a></h2><span class="cart-meta">${escapeHtml(product.duration)} · ${escapeHtml(product.fulfillment)}</span><strong class="cart-price">${rupiah(product.price)}</strong><div class="cart-controls"><button class="qty-button" type="button" data-quantity="${product.id}" data-delta="-1" aria-label="Kurangi jumlah ${escapeHtml(product.name)}">${feather('minus')}</button><input class="qty-value" type="number" min="1" max="99" inputmode="numeric" value="${quantity}" data-cart-quantity="${product.id}" aria-label="Jumlah ${escapeHtml(product.name)}" /><button class="qty-button" type="button" data-quantity="${product.id}" data-delta="1" aria-label="Tambah jumlah ${escapeHtml(product.name)}">${feather('plus')}</button><button class="remove-button" type="button" data-remove="${product.id}">Hapus</button></div></div><div class="cart-side"><strong class="cart-price">${rupiah(product.price * quantity)}</strong></div></article>`).join('')}</div><aside class="summary-card"><h2>Ringkasan belanja</h2><div class="summary-line"><span>Subtotal (${cartQuantity()} item)</span><span>${rupiah(total)}</span></div><div class="summary-total"><span>Total</span><span>${rupiah(total)}</span></div><a class="button button-primary" href="#/checkout">Lanjut ke pembayaran</a><p class="summary-note">QRIS unik untuk pesanan akan dibuat saat checkout.</p></aside></div></section>`;
+    return `<nav class="breadcrumbs" aria-label="Breadcrumb"><a href="#/">Beranda</a><span aria-hidden="true">›</span><span>Keranjang</span></nav><section class="page-panel"><div class="page-heading"><h1>Keranjangmu</h1><p>Periksa spesifikasi, jumlah, dan harga sebelum mengonfirmasi pesanan.</p></div>${checkoutStepsMarkup(1)}<div class="cart-layout"><div class="cart-list">${rows.map(({ product, quantity, unitPrice, specificationText, lineKey }) => `<article class="cart-row"><div class="cart-thumb ${product.image ? 'product-media' : 'image-placeholder'}" ${product.image ? `style="background-image:url('${escapeHtml(product.image)}')"` : ''} role="img" aria-label="Gambar ${escapeHtml(product.name)}"></div><div><h2><a href="#/produk/${encodeURIComponent(product.slug)}">${escapeHtml(product.name)}</a></h2><span class="cart-meta">${escapeHtml(product.duration)} · ${escapeHtml(product.fulfillment)}</span>${specificationText ? `<span class="cart-specifications">${escapeHtml(specificationText)}</span>` : ''}<strong class="cart-price">${rupiah(unitPrice)}</strong><div class="cart-controls"><button class="qty-button" type="button" data-quantity="${escapeHtml(lineKey)}" data-delta="-1" aria-label="Kurangi jumlah ${escapeHtml(product.name)}">${feather('minus')}</button><input class="qty-value" type="number" min="1" max="99" inputmode="numeric" value="${quantity}" data-cart-quantity="${escapeHtml(lineKey)}" aria-label="Jumlah ${escapeHtml(product.name)}" /><button class="qty-button" type="button" data-quantity="${escapeHtml(lineKey)}" data-delta="1" aria-label="Tambah jumlah ${escapeHtml(product.name)}">${feather('plus')}</button><button class="remove-button" type="button" data-remove="${escapeHtml(lineKey)}">Hapus</button></div></div><div class="cart-side"><strong class="cart-price">${rupiah(unitPrice * quantity)}</strong></div></article>`).join('')}</div><aside class="summary-card"><h2>Ringkasan belanja</h2><div class="summary-line"><span>Subtotal (${cartQuantity()} item)</span><span>${rupiah(total)}</span></div><div class="summary-total"><span>Total</span><span>${rupiah(total)}</span></div><a class="button button-primary" href="#/checkout">Lanjut konfirmasi</a><p class="summary-note">Rincian pesanan akan kamu konfirmasi sebelum pembayaran.</p></aside></div></section>`;
   }
 
   function renderInfoPage(path) {
     if (path === '/program-reseller') {
       const price = Number(STOREFRONT.resellerPlan?.price) || 149000;
       const bulkProducts = PRODUCTS.filter((product) => Number(product.bulkUnlockQuantity) >= 2);
-      const bulkSelector = bulkProducts.length ? `<div class="bulk-product-picker"><span>Produk</span>${customDropdown('productId', 'Pilih produk', bulkProducts.map((product) => ({ value: product.id, label: product.name, minimum: Number(product.bulkUnlockQuantity) })), bulkProducts[0].id, 'bulk-product-select', 'data-bulk-product')}</div><label class="bulk-quantity-picker">Jumlah pembelian<input type="number" min="1" max="99" value="${Math.min(99, Number(bulkProducts[0].bulkUnlockQuantity))}" inputmode="numeric" data-bulk-quantity /></label><p class="bulk-calculator-result" data-bulk-result aria-live="polite"></p>` : '<p class="bulk-calculator-result">Belum ada produk dengan minimum bulk. Paket semua produk tersedia di pilihan berikutnya.</p>';
+      const firstBulk = bulkProducts[0];
+      const bulkSelector = bulkProducts.length ? `<div class="bulk-product-picker"><span>Produk</span>${customDropdown('productId', 'Pilih produk', bulkProducts.map((product) => ({ value: product.id, label: product.name, minimum: Number(product.bulkUnlockQuantity), slug: product.slug })), firstBulk.id, 'bulk-product-select', 'data-bulk-product')}</div><label class="bulk-quantity-picker">Jumlah<input type="number" min="${Number(firstBulk.bulkUnlockQuantity)}" max="99" value="${Math.min(99, Number(firstBulk.bulkUnlockQuantity))}" inputmode="numeric" data-bulk-quantity /></label><p class="bulk-calculator-result" data-bulk-result aria-live="polite"></p><a class="button button-primary bulk-product-link" data-bulk-product-link href="#/produk/${encodeURIComponent(firstBulk.slug)}?bulk=1&amp;qty=${Number(firstBulk.bulkUnlockQuantity)}">Pilih produk</a>` : '<p class="bulk-calculator-result">Belum ada produk yang mengatur minimum pembelian bulk.</p>';
+      const planAction = currentUser?.resellerPlan
+        ? '<span class="reseller-active-label">Paket sudah aktif di akunmu</span><a class="button button-primary" href="#/kategori/semua">Belanja dengan harga reseller</a>'
+        : adminPreviewMode
+          ? '<span class="reseller-active-label">Tombol pembelian nonaktif dalam pratinjau.</span>'
+          : currentUser
+            ? '<button class="button button-primary" type="button" data-buy-reseller-plan>Lanjutkan dengan paket</button>'
+            : '<a class="button button-primary" href="#/masuk?next=%2Fprogram-reseller">Masuk untuk melanjutkan</a>';
       return `<nav class="breadcrumbs" aria-label="Breadcrumb"><a href="#/">Beranda</a><span aria-hidden="true">›</span><span>Program reseller</span></nav>
-        <section class="info-layout info-layout-reseller">
-          <div class="info-main"><div class="page-heading"><h1>Harga reseller, sesuai cara belanjamu</h1><p>Mulai dari satu produk atau buka harga khusus untuk seluruh katalog.</p></div>
-            <div class="reseller-choice-tabs" role="tablist" aria-label="Pilihan akses reseller"><button type="button" role="tab" aria-selected="true" data-reseller-choice="bulk">Per produk</button><button type="button" role="tab" aria-selected="false" data-reseller-choice="all">Semua produk</button></div>
-            <section class="reseller-choice-panel" data-reseller-panel="bulk"><div class="reseller-choice-copy"><span class="reseller-choice-kicker">Akses per produk</span><h2>Beli stok untuk produk pilihanmu</h2><p>Penuhi minimum dalam satu pesanan. Harga reseller terbuka setelah pembayaran dikonfirmasi.</p></div><div class="bulk-calculator">${bulkSelector}<a class="text-link" href="#/kategori/semua">Lihat produk ${feather('arrow-right')}</a></div></section>
-            <section class="reseller-choice-panel" data-reseller-panel="all" hidden><div class="reseller-choice-copy"><span class="reseller-choice-kicker">Akses seluruh katalog</span><h2>Satu kali bayar</h2><p>Paket membuka harga reseller yang sudah ditetapkan admin di semua produk setelah pembayaran dikonfirmasi.</p></div>${currentUser?.resellerPlan ? `<div class="reseller-plan-card"><strong>Akses sudah aktif</strong><p>Harga reseller seluruh katalog tersedia di akunmu.</p><a class="button button-primary" href="#/kategori/semua">Lihat produk</a></div>` : `<div class="reseller-plan-card"><span>Paket reseller</span><strong>${rupiah(price)}</strong><p>${escapeHtml(STOREFRONT.resellerPlan?.terms || 'Bayar satu kali. Akses berlaku setelah pembayaran dikonfirmasi.')}</p>${STOREFRONT.payment?.available ? currentUser ? `<button class="button button-primary" type="button" data-buy-reseller-plan>Beli paket</button>` : `<a class="button button-primary" href="#/masuk?next=%2Fprogram-reseller">Masuk untuk membeli</a>` : `<a class="button reseller-contact-link" href="https://t.me/Mubacs" target="_blank" rel="noopener noreferrer">Tanyakan paket ke admin</a>`}</div>`}</section>
+        <section class="page-panel reseller-program-page"><div class="page-heading"><span class="reseller-page-eyebrow">PROGRAM RESELLER</span><h1>Harga khusus untuk jualan ulang</h1><p>Pilih produk yang ingin kamu stok, atau buka harga reseller di seluruh katalog.</p></div>
+          <div class="reseller-path-grid">
+            <article class="reseller-path-card reseller-bulk-card"><div class="reseller-path-top"><span class="reseller-path-index">01</span><span class="reseller-path-label">Akses per produk</span></div><h2>Mulai dari produk pilihan</h2><p>Penuhi minimum dalam satu pesanan. Harga khusus produk itu aktif setelah pembayaran diverifikasi.</p>${bulkSelector}<small class="reseller-path-note">Jumlah yang dipilih dibawa ke halaman produk agar bisa kamu tinjau sebelum masuk keranjang.</small></article>
+            <article class="reseller-path-card reseller-plan-card"><div class="reseller-path-top"><span class="reseller-path-index">02</span><span class="reseller-path-label">Akses seluruh katalog</span></div><h2>Buka semua harga reseller</h2><div class="reseller-plan-price"><small>Satu kali bayar</small><strong>${rupiah(price)}</strong></div><p>${escapeHtml(STOREFRONT.resellerPlan?.terms || 'Akses berlaku permanen setelah pesanan dibayar dan diverifikasi.')}</p>${planAction}</article>
           </div>
-          <aside class="info-side-rail reseller-side-rail"><section class="rail-card"><span class="rail-eyebrow">Ketentuan</span><h2>Akses untuk akunmu</h2><ol class="rail-steps"><li>Pilih produk dan penuhi jumlah minimumnya.</li><li>Harga khusus terbuka setelah pembayaran dikonfirmasi.</li><li>Akses berlaku permanen pada produk tersebut.</li></ol></section><section class="rail-card rail-card-soft"><span class="rail-eyebrow">Perlu bantuan?</span><p>Lihat jawaban tentang minimum bulk dan paket reseller.</p><a class="rail-link" href="#/faq">Buka FAQ ${feather('arrow-right')}</a></section></aside>
+          <section class="reseller-steps"><h2>Cara kerjanya</h2><ol><li><span>1</span><div><strong>Pilih jalur akses</strong><small>Per produk atau untuk seluruh katalog.</small></div></li><li><span>2</span><div><strong>Konfirmasi pesanan</strong><small>Rincian tersimpan di menu Pesanan sebelum tahap pembayaran.</small></div></li><li><span>3</span><div><strong>Harga khusus aktif</strong><small>Akses dibuka setelah pembayaran terverifikasi.</small></div></li></ol></section>
+          <div class="reseller-faq-link"><span>Butuh penjelasan soal minimum pembelian atau akses harga?</span><a class="text-link" href="#/faq">Buka FAQ ${feather('arrow-right')}</a></div>
         </section>`;
     }
     if (path === '/promo') {
@@ -544,7 +647,7 @@
         { title: 'Data yang kami simpan', body: 'Saat kamu memakai Bacshop, sistem menyimpan nama dan email akun, perubahan profil yang kamu kirim, serta rincian pesanan dan status pembayarannya. Keranjang disimpan di browser yang kamu pakai.' },
         { title: 'Untuk apa data digunakan', body: 'Data akun dipakai untuk masuk, menampilkan profil, memproses pesanan, mengirim produk, mengelola akses harga reseller, dan menjawab permintaan bantuan.' },
         { title: 'Data teknis', body: 'Alamat IP koneksi dipakai sementara untuk membatasi percobaan login. Nilai ini tidak disimpan sebagai bagian dari profil akun atau pesanan.' },
-        { title: 'Pembayaran melalui QRIS', body: 'Saat checkout, Bacshop membuat QRIS khusus pesanan dan memeriksa status pembayaran secara otomatis. Bacshop tidak meminta PIN atau kata sandi aplikasi pembayaranmu.' },
+        { title: 'Pembayaran melalui QRIS', body: 'Setelah pesanan dikonfirmasi, Bacshop membuat QRIS khusus pada halaman pembayaran dan memeriksa status transaksi secara otomatis. Bacshop tidak meminta PIN atau kata sandi aplikasi pembayaranmu.' },
         { title: 'Penyimpanan dan permintaan', body: 'Data akun dan pesanan disimpan pada server Bacshop untuk menjalankan layanan dan menyimpan riwayat transaksi. Untuk melihat atau memperbarui data, atau meminta penghapusan akun, hubungi admin. Sebagian catatan transaksi dapat tetap diperlukan untuk menyelesaikan pesanan atau kewajiban pencatatan.' },
       ] },
       '/data-pribadi': { title: 'Penggunaan data pribadi', intro: 'Ringkasan jenis data, tujuan pemrosesan, dan cara mengajukan permintaan.', sections: [
@@ -611,11 +714,12 @@
     if (order.paymentStatus === 'refunded') return 'Dana dikembalikan';
     if (order.paymentStatus === 'paid' && order.fulfillmentStatus === 'fulfilled') return 'Selesai';
     if (order.paymentStatus === 'paid') return 'Pembayaran terverifikasi';
+    if (order.paymentInitialized === false) return 'Pesanan dikonfirmasi';
     return 'Menunggu pembayaran';
   }
 
   function renderOrdersPage(orders) {
-    const entries = orders.map((order) => `<a class="order-card" href="#/pesanan/${encodeURIComponent(order.id)}"><span class="order-card-top"><strong>${escapeHtml(order.id)}</strong><span class="status-pill ${order.paymentStatus === 'paid' ? 'status-success' : order.paymentStatus === 'refunded' ? 'status-danger' : 'status-warning'}">${orderStatusText(order)}</span></span><span class="order-card-items">${order.kind === 'reseller-plan' ? 'Paket reseller' : order.items.map((item) => `${escapeHtml(item.name)} × ${item.quantity}`).join(', ')}</span><span class="order-card-bottom"><span>${new Date(order.createdAt).toLocaleString('id-ID')}</span><strong>${rupiah(order.total)}</strong></span></a>`).join('');
+    const entries = orders.map((order) => `<a class="order-card" href="#/pesanan/${encodeURIComponent(order.id)}"><span class="order-card-top"><strong>${escapeHtml(order.id)}</strong><span class="status-pill ${order.paymentStatus === 'paid' ? 'status-success' : order.paymentStatus === 'refunded' ? 'status-danger' : 'status-warning'}">${orderStatusText(order)}</span></span><span class="order-card-items">${order.kind === 'reseller-plan' ? 'Paket reseller' : order.items.map((item) => `${escapeHtml(item.name)} × ${item.quantity}${(item.specifications || []).length ? ' · ' + item.specifications.map((specification) => escapeHtml(specification.name) + ': ' + escapeHtml(specification.label)).join(', ') : ''}`).join(', ')}</span><span class="order-card-bottom"><span>${new Date(order.createdAt).toLocaleString('id-ID')}</span><strong>${rupiah(order.total)}</strong></span></a>`).join('');
     return `<nav class="breadcrumbs" aria-label="Breadcrumb"><a href="#/">Beranda</a><span aria-hidden="true">›</span><span>Pesanan</span></nav><section class="page-panel orders-page"><div class="page-heading"><h1>Pesanan</h1><p>Pantau pembayaran dan pemenuhan secara terpisah.</p></div>${entries ? `<div class="orders-list">${entries}</div>` : `<div class="empty-state"><h2>Belum ada pesanan</h2><p>Pesanan yang kamu buat akan tercatat di sini.</p><a class="button button-primary" href="#/kategori/semua">Mulai belanja</a></div>`}</section>`;
   }
 
@@ -623,40 +727,55 @@
     const isPlan = order.kind === 'reseller-plan';
     const isPaid = order.paymentStatus === 'paid';
     const isRefunded = order.paymentStatus === 'refunded';
-    const canCheckPayment = !isPaid && !isRefunded;
-    const details = isPlan ? '<li><span>Akses</span><strong>Harga reseller seluruh katalog · permanen</strong></li>' : order.items.map((item) => `<li><span>${escapeHtml(item.name)} × ${item.quantity}</span><strong>${rupiah(item.lineTotal)}</strong></li>`).join('');
-    const qr = canCheckPayment && order.qrisImage ? `<div class="qris-frame"><img src="${escapeHtml(order.qrisImage)}" alt="QRIS untuk pesanan ${escapeHtml(order.id)}" /></div>` : '';
+    const hasQr = Boolean(order.qrisImage);
+    const canCheckPayment = !isPaid && !isRefunded && hasQr;
+    const details = isPlan ? '<li><span>Akses</span><strong>Harga reseller seluruh katalog · permanen</strong></li>' : order.items.map((item) => {
+      const selections = (item.specifications || []).map((specification) => escapeHtml(specification.name) + ': ' + escapeHtml(specification.label)).join(' · ');
+      return `<li><span>${escapeHtml(item.name)} × ${item.quantity}${selections ? `<small class="order-specification-copy">${selections}</small>` : ''}</span><strong>${rupiah(item.lineTotal)}</strong></li>`;
+    }).join('');
+    const qr = canCheckPayment ? `<div class="qris-frame"><img src="${escapeHtml(order.qrisImage)}" alt="QRIS untuk pesanan ${escapeHtml(order.id)}" /></div>` : '';
     const paymentMessage = isPaid
       ? '<p class="payment-success-copy" role="status">Pembayaran berhasil dikonfirmasi.</p>'
       : isRefunded
         ? '<p class="payment-pending-copy" role="status">Dana pesanan ini sudah dikembalikan.</p>'
-        : `<p class="payment-pending-copy" role="status">${order.qrisImage ? 'Pembayaran belum terkonfirmasi. QRIS tetap tersedia di halaman ini; status akan diperiksa otomatis.' : 'QRIS sedang disiapkan. Periksa kembali halaman ini sebentar lagi.'}</p>`;
+        : hasQr
+          ? '<p class="payment-pending-copy" role="status">Pembayaran belum terkonfirmasi. Status akan diperiksa otomatis.</p>'
+        : '<p class="payment-success-copy" role="status">Pesanan sudah tersimpan. QRIS khusus pesanan ini siap dibuat saat kamu melanjutkan pembayaran.</p>';
     const expires = order.paymentExpiresAt ? `<p class="qris-expiration">Berlaku sampai ${escapeHtml(new Date(order.paymentExpiresAt).toLocaleString('id-ID'))}</p>` : '';
-    const detailStatus = isPaid ? 'Pembayaran terverifikasi' : isRefunded ? 'Dana dikembalikan' : 'Menunggu pembayaran';
+    const detailStatus = isPaid ? 'Pembayaran terverifikasi' : isRefunded ? 'Dana dikembalikan' : order.paymentInitialized === false ? 'Pesanan dikonfirmasi' : 'Menunggu pembayaran';
     const detailStatusClass = isPaid ? 'status-success' : 'status-warning';
-    return `<nav class="breadcrumbs" aria-label="Breadcrumb"><a href="#/">Beranda</a><span aria-hidden="true">›</span><a href="#/pesanan">Pesanan</a><span aria-hidden="true">›</span><span>${escapeHtml(order.id)}</span></nav><section class="page-panel order-detail-page"><div class="order-detail-heading"><div><span class="product-category">${escapeHtml(order.id)}</span><h1>${order.kind === 'reseller-plan' ? 'Detail paket reseller' : 'Detail pesanan'}</h1><p>${new Date(order.createdAt).toLocaleString('id-ID')}</p></div><span class="status-pill ${detailStatusClass}">${detailStatus}</span></div>${checkoutStepsMarkup(isPaid ? 3 : 3, isPaid)}<div class="order-detail-grid"><div><section class="order-detail-card"><h2>Rincian</h2><ul class="term-list">${details}</ul><div class="summary-total"><span>Total</span><strong>${rupiah(order.total)}</strong></div></section><section class="order-detail-card"><h2>Status pemenuhan</h2><p>${escapeHtml(order.fulfillmentStatus || 'not_started') === 'fulfilled' ? 'Produk sudah dipenuhi.' : 'Pesanan mulai diproses setelah pembayaran terkonfirmasi.'}</p></section></div><aside class="order-payment-card ${isPaid ? 'is-paid' : ''}" data-payment-order="${escapeHtml(order.id)}" data-payment-poll="${order.paymentStatus === 'pending' ? 'true' : 'false'}"><h2>${isPaid ? 'Pembayaran berhasil' : isRefunded ? 'Status pembayaran' : 'Bayar dengan QRIS'}</h2>${qr}${expires}${paymentMessage}<strong class="payment-amount">${rupiah(order.total)}</strong>${canCheckPayment ? '<button class="button button-primary" type="button" data-refresh-order>Periksa pembayaran</button>' : ''}${isPlan ? `<details class="order-terms"><summary>Syarat paket reseller</summary><p>${escapeHtml(order.resellerTerms || '')}</p></details>` : ''}</aside></div><a class="text-link" href="#/pesanan">Kembali ke pesanan</a></section>`;
+    const paymentAction = !isPaid && !isRefunded && !hasQr && order.paymentStatus === 'pending'
+      ? '<button class="button button-primary" type="button" data-create-qris>Buat QRIS &amp; lanjut bayar</button><p class="checkout-error" data-qris-error role="status" aria-live="polite" hidden></p>'
+      : '';
+    const editHref = checkoutItemsOverride?.length === 1
+      ? `#/produk/${encodeURIComponent(PRODUCTS.find((product) => product.id === checkoutItemsOverride[0].id)?.slug || '')}`
+      : '#/keranjang';
+    return `<nav class="breadcrumbs" aria-label="Breadcrumb"><a href="#/">Beranda</a><span aria-hidden="true">›</span><a href="#/pesanan">Pesanan</a><span aria-hidden="true">›</span><span>${escapeHtml(order.id)}</span></nav><section class="page-panel order-detail-page"><div class="order-detail-heading"><div><span class="product-category">${escapeHtml(order.id)}</span><h1>${order.kind === 'reseller-plan' ? 'Detail paket reseller' : 'Pesanan dikonfirmasi'}</h1><p>${new Date(order.createdAt).toLocaleString('id-ID')}</p></div><span class="status-pill ${detailStatusClass}">${detailStatus}</span></div>${checkoutStepsMarkup(3, isPaid)}<div class="order-detail-grid"><div><section class="order-detail-card"><h2>Rincian</h2><ul class="term-list">${details}</ul><div class="summary-total"><span>Total pesanan</span><strong>${rupiah(order.total)}</strong></div></section><section class="order-detail-card"><h2>Langkah berikutnya</h2><p>${isPaid ? 'Pembayaran sudah terverifikasi. Pesanan akan diproses sesuai keterangan produk.' : hasQr ? 'Selesaikan pembayaran dengan QRIS di samping.' : 'Buat QRIS dinamis untuk pesanan ini, lalu bayar sesuai nominal yang tertera.'}</p></section></div><aside class="order-payment-card ${isPaid ? 'is-paid' : ''}" data-payment-order="${escapeHtml(order.id)}" data-payment-poll="${order.paymentStatus === 'pending' && hasQr ? 'true' : 'false'}"><h2>${isPaid ? 'Pembayaran berhasil' : isRefunded ? 'Status pesanan' : hasQr ? 'Bayar dengan QRIS' : 'Pembayaran'}</h2>${qr}${expires}${paymentMessage}<strong class="payment-amount">${rupiah(order.total)}</strong>${paymentAction}${canCheckPayment ? '<button class="button button-primary" type="button" data-refresh-order>Periksa pembayaran</button>' : ''}${isPlan ? `<details class="order-terms"><summary>Syarat paket reseller</summary><p>${escapeHtml(order.resellerTerms || '')}</p></details>` : ''}</aside></div><a class="text-link" href="#/pesanan">Kembali ke pesanan</a></section>`;
   }
 
   function renderCheckoutPage() {
-    const items = cart.map((item) => ({ ...item, product: PRODUCTS.find((product) => product.id === item.id) })).filter((item) => item.product);
-    const total = items.reduce((sum, item) => sum + item.product.price * item.quantity, 0);
+    const checkoutCart = checkoutItemsOverride || cart;
+    const items = checkoutCart.map((item) => {
+      const product = PRODUCTS.find((entry) => entry.id === item.id);
+      const selection = resolveClientSpecifications(product, item.specifications);
+      return product && selection ? { ...item, product, unitPrice: selection.unitPrice, specificationText: selection.chosen.map((entry) => entry.name + ': ' + entry.label).join(' · ') } : null;
+    }).filter(Boolean);
+    const total = items.reduce((sum, item) => sum + item.unitPrice * item.quantity, 0);
     if (!items.length) return `<section class="page-panel"><div class="empty-state"><h1>Keranjang masih kosong</h1><p>Pilih produk dari katalog sebelum melanjutkan.</p><a class="button button-primary" href="#/kategori/semua">Lihat katalog</a></div></section>`;
-    const paymentReady = Boolean(STOREFRONT.payment?.available);
     const itemCount = items.reduce((sum, item) => sum + item.quantity, 0);
-    return `<nav class="breadcrumbs" aria-label="Breadcrumb"><a href="#/">Beranda</a><span aria-hidden="true">›</span><a href="#/keranjang">Keranjang</a><span aria-hidden="true">›</span><span>Pembayaran</span></nav>
+    return `<nav class="breadcrumbs" aria-label="Breadcrumb"><a href="#/">Beranda</a><span aria-hidden="true">›</span><a href="#/keranjang">Keranjang</a><span aria-hidden="true">›</span><span>Konfirmasi</span></nav>
       <section class="page-panel checkout-page">
-        <div class="page-heading"><h1>Pembayaran</h1><p>Periksa tagihanmu, lalu buat QRIS khusus untuk pesanan ini.</p></div>
+        <div class="page-heading"><h1>Konfirmasi pesanan</h1><p>Pastikan produk, spesifikasi, dan jumlahnya sudah sesuai.</p></div>
         ${checkoutStepsMarkup(2)}
         <div class="checkout-layout">
           <div class="checkout-payment-column">
-            <section class="checkout-payment-panel"><p class="checkout-section-kicker">Langkah 2 · Pembayaran</p><h2>Pilih pembayaran</h2>
-              <div class="checkout-payment-method"><span class="checkout-payment-icon">${feather('grid')}</span><span class="checkout-payment-method-copy"><strong>QRIS</strong><small>QR unik dengan nominal tepat. Bisa dipindai lewat aplikasi pembayaran yang mendukung QRIS.</small></span><span class="checkout-payment-status">Otomatis</span></div>
+            <section class="checkout-payment-panel checkout-confirmation-panel"><p class="checkout-section-kicker">Langkah 2 · Konfirmasi</p><h2>Pesanan untuk akun ini</h2>
               <div class="checkout-account-note"><span>Pesanan untuk akun</span><strong>${escapeHtml(currentUser?.name || 'Akun Bacshop')}</strong><small>${escapeHtml(currentUser?.email || '')}</small></div>
-              <p class="checkout-payment-explainer">${feather('lock')} QR baru dibuat setelah kamu menekan tombol di samping. Pesanan masuk ke daftar pesanan, dan statusnya diperiksa otomatis setelah pembayaran.</p>
+              <p class="checkout-payment-explainer">${feather('arrow-right')} Setelah pesanan dikonfirmasi, kamu akan membuat QRIS khusus pada halaman pembayaran. Nominal akan terisi sesuai total pesanan.</p>
             </section>
-            <details class="checkout-order-panel"><summary><strong>Rincian produk</strong><span>${itemCount} item · ${rupiah(total)}</span></summary><div class="checkout-order-list">${items.map((item) => `<div class="checkout-item"><span><strong>${escapeHtml(item.product.name)}</strong><small>${item.quantity} × ${rupiah(item.product.price)}</small></span><strong>${rupiah(item.product.price * item.quantity)}</strong></div>`).join('')}</div></details>
+            <section class="checkout-order-panel checkout-order-review"><header><strong>Produk yang dipesan</strong><span>${itemCount} item</span></header><div class="checkout-order-list">${items.map((item) => `<div class="checkout-item"><span><strong>${escapeHtml(item.product.name)}</strong>${item.specificationText ? `<small>${escapeHtml(item.specificationText)}</small>` : ''}<small>${item.quantity} × ${rupiah(item.unitPrice)}</small></span><strong>${rupiah(item.unitPrice * item.quantity)}</strong></div>`).join('')}</div></section>
           </div>
-          <aside class="checkout-total-card"><h2>Total pembayaran</h2><div class="summary-line"><span>Subtotal · ${itemCount} item</span><span>${rupiah(total)}</span></div><div class="summary-line"><span>Biaya layanan</span><span>Gratis</span></div><div class="summary-total"><span>Total</span><strong>${rupiah(total)}</strong></div>${paymentReady ? `<button class="button button-primary" type="button" data-create-order>Buat QRIS &amp; lanjut bayar</button><p class="summary-note">Belum ada pembayaran sampai kamu memindai QRIS dari halaman pesanan.</p>` : `<div class="checkout-unavailable"><strong>QRIS belum tersedia</strong><span>Pengaturan pembayaran sedang diperiksa. Coba lagi sebentar.</span></div>`}<p class="checkout-error" data-order-error role="status" aria-live="polite" hidden></p><a class="checkout-edit-cart" href="#/keranjang">Kembali ke keranjang untuk ubah jumlah</a></aside>
+          <aside class="checkout-total-card"><h2>Total pesanan</h2><div class="summary-line"><span>Subtotal · ${itemCount} item</span><span>${rupiah(total)}</span></div><div class="summary-line"><span>Biaya layanan</span><span>Gratis</span></div><div class="summary-total"><span>Total</span><strong>${rupiah(total)}</strong></div><button class="button button-primary" type="button" data-confirm-order>Konfirmasi pesanan</button><p class="summary-note">QRIS dibuat setelah pesanan dikonfirmasi, pada halaman pembayaran.</p><p class="checkout-error" data-order-error role="status" aria-live="polite" hidden></p><a class="checkout-edit-cart" href="${checkoutItemsOverride?.length === 1 ? `#/produk/${encodeURIComponent(items[0].product.slug)}` : '#/keranjang'}">${checkoutItemsOverride?.length === 1 ? 'Kembali ke produk untuk mengubah pilihan' : 'Kembali ke keranjang untuk ubah jumlah'}</a></aside>
         </div>
       </section>`;
   }
@@ -780,12 +899,14 @@
       } catch (error) { showToast(error.message); }
     });
 
-    app.querySelector('[data-create-order]')?.addEventListener('click', async (event) => {
+    app.querySelector('[data-confirm-order]')?.addEventListener('click', async (event) => {
       const button = event.currentTarget;
       button.disabled = true;
       try {
-        const result = await requestApi('/api/orders', { method: 'POST', body: { items: cart } });
-        writeCart([]);
+        const directItems = checkoutItemsOverride;
+        const result = await requestApi('/api/orders', { method: 'POST', body: { items: directItems || cart } });
+        if (!directItems) writeCart([]);
+        writeCheckoutOverride(null);
         window.location.hash = `#/pesanan/${encodeURIComponent(result.order.id)}`;
       } catch (error) {
         button.disabled = false;
@@ -820,6 +941,25 @@
         showToast(error.message);
       }
     });
+
+    app.querySelector('[data-create-qris]')?.addEventListener('click', async (event) => {
+      const button = event.currentTarget;
+      const orderId = app.querySelector('[data-payment-order]')?.dataset.paymentOrder;
+      if (!orderId) return;
+      button.disabled = true;
+      button.textContent = 'Membuat QRIS…';
+      const message = app.querySelector('[data-qris-error]');
+      if (message) { message.hidden = true; message.textContent = ''; }
+      try {
+        await requestApi(`/api/orders/${encodeURIComponent(orderId)}/create-qris`, { method: 'POST', body: {} });
+        await render();
+      } catch (error) {
+        button.disabled = false;
+        button.textContent = 'Coba buat QRIS lagi';
+        if (message) { message.hidden = false; message.textContent = error.message; }
+        else showToast(error.message);
+      }
+    });
   }
 
   function adminAuthPage(setupRequired) {
@@ -832,8 +972,8 @@
 
   function customDropdown(name, label, options, selectedValue, className = '', extraInputAttributes = '') {
     const selected = options.find((option) => String(option.value) === String(selectedValue)) || options[0] || { value: '', label: 'Pilih' };
-    const menu = options.map((option) => `<button class="custom-dropdown-option" type="button" role="option" data-dropdown-option="${escapeHtml(option.value)}" data-option-label="${escapeHtml(option.label)}" ${option.minimum !== undefined ? `data-option-minimum="${Number(option.minimum)}"` : ''} aria-selected="${String(option.value) === String(selected.value)}">${escapeHtml(option.label)}${String(option.value) === String(selected.value) ? feather('check') : ''}</button>`).join('');
-    return `<div class="custom-dropdown ${className}" data-admin-select><input type="hidden" name="${escapeHtml(name)}" value="${escapeHtml(selected.value)}" data-dropdown-value data-label="${escapeHtml(selected.label)}" ${selected.minimum !== undefined ? `data-minimum="${Number(selected.minimum)}"` : ''} ${extraInputAttributes} /><button class="custom-dropdown-trigger" type="button" aria-label="${escapeHtml(label)}: ${escapeHtml(selected.label)}" aria-haspopup="listbox" aria-expanded="false" data-dropdown-trigger><span data-dropdown-label>${escapeHtml(selected.label)}</span>${feather('chevron-down')}</button><div class="custom-dropdown-menu" role="listbox" aria-label="${escapeHtml(label)}" hidden>${menu}</div></div>`;
+    const menu = options.map((option) => `<button class="custom-dropdown-option" type="button" role="option" data-dropdown-option="${escapeHtml(option.value)}" data-option-label="${escapeHtml(option.label)}" ${option.minimum !== undefined ? `data-option-minimum="${Number(option.minimum)}"` : ''} ${option.slug ? `data-option-slug="${escapeHtml(option.slug)}"` : ''} aria-selected="${String(option.value) === String(selected.value)}">${escapeHtml(option.label)}${String(option.value) === String(selected.value) ? feather('check') : ''}</button>`).join('');
+    return `<div class="custom-dropdown ${className}" data-admin-select><input type="hidden" name="${escapeHtml(name)}" value="${escapeHtml(selected.value)}" data-dropdown-value data-label="${escapeHtml(selected.label)}" ${selected.minimum !== undefined ? `data-minimum="${Number(selected.minimum)}"` : ''} ${selected.slug ? `data-slug="${escapeHtml(selected.slug)}"` : ''} ${extraInputAttributes} /><button class="custom-dropdown-trigger" type="button" aria-label="${escapeHtml(label)}: ${escapeHtml(selected.label)}" aria-haspopup="listbox" aria-expanded="false" data-dropdown-trigger><span data-dropdown-label>${escapeHtml(selected.label)}</span>${feather('chevron-right','custom-dropdown-chevron')}</button><div class="custom-dropdown-menu" role="listbox" aria-label="${escapeHtml(label)}" hidden>${menu}</div></div>`;
   }
 
   function imageUploadField(label, value = '') {
@@ -851,7 +991,7 @@
         <div class="admin-field"><span class="admin-field-label">Kategori</span>${customDropdown('category', 'Kategori produk', categories, product.category || categories[0]?.value, 'admin-dropdown')}</div>
         <label>Harga retail (Rp)<input name="price" type="number" min="1" step="1000" value="${Number(product.price) || ''}" required /></label>
         <label>Harga reseller (Rp)<input name="resellerPrice" type="number" min="1" step="1000" value="${product.resellerPrice ?? ''}" /><small>Kosongkan bila produk belum memiliki harga reseller.</small></label>
-        <label>Minimum bulk<input name="bulkMinimum" type="number" min="2" max="999" step="1" value="${product.bulkMinimum ?? ''}" /><small>Harga khusus terbuka permanen setelah pesanan lunas.</small></label>
+        <label>Minimum bulk<input name="bulkMinimum" type="number" min="2" max="99" step="1" value="${product.bulkMinimum ?? ''}" /><small>Harga khusus terbuka setelah jumlah ini dibayar dan diverifikasi.</small></label>
         <label>Stok tersedia<input name="stock" type="number" min="0" max="1000000" step="1" value="${product.stock ?? ''}" placeholder="Tidak dibatasi" /><small>Kosongkan untuk produk digital tanpa batas stok. Pesanan tertunda ikut menahan stok.</small></label>
         <label>Durasi<input name="duration" value="${escapeHtml(product.duration || '')}" required maxlength="180" /></label>
         <label>Cara pemenuhan<input name="fulfillment" value="${escapeHtml(product.fulfillment || '')}" required maxlength="180" /></label>
@@ -859,6 +999,7 @@
         <div class="admin-field"><span class="admin-field-label">Status pesanan</span>${customDropdown('orderMode', 'Status pesanan', [{ value: 'ready', label: 'Bisa dipesan' }, { value: 'preorder', label: 'Pre-order' }], product.orderMode || 'ready', 'admin-dropdown')}</div>
         <label class="admin-wide">Deskripsi<textarea name="description" rows="3" maxlength="2400" required>${escapeHtml(product.description || '')}</textarea></label>
         <label class="admin-wide">Ketentuan produk<textarea name="terms" rows="5" spellcheck="false">${escapeHtml(termsText)}</textarea><small>Satu ketentuan per baris, format: Nama: keterangan.</small></label>
+        <label class="admin-wide">Spesifikasi dan varian<textarea name="specificationsJson" rows="8" spellcheck="false">${escapeHtml(JSON.stringify(product.specifications || [], null, 2))}</textarea><small>Atur pilihan per produk dalam JSON. Contoh: [{"id":"durasi","name":"Durasi","required":true,"options":[{"value":"1-bulan","label":"1 bulan","priceAdjustment":0},{"value":"3-bulan","label":"3 bulan","priceAdjustment":80000}]}]. Penyesuaian harga ditambahkan ke harga retail atau reseller.</small></label>
         ${imageUploadField('Gambar produk', product.image || '')}
         <label class="admin-confirm-stock"><input name="preOrderConfirmed" type="checkbox" ${product.preOrderConfirmed ? 'checked' : ''} /><span><strong>Stok pre-order sudah dikonfirmasi</strong><small>Pemesanan dibuka setelah stok dipastikan.</small></span></label>
       </div><p class="admin-form-message" data-admin-message role="status" aria-live="polite"></p><div class="admin-form-actions"><button class="button button-primary" type="submit">${isNew ? 'Tambah produk' : 'Simpan perubahan'}</button>${isNew ? '' : `<button class="button button-danger" type="button" data-delete-product="${escapeHtml(product.id)}">Hapus produk</button>`}</div>
@@ -873,13 +1014,17 @@
       <button class="button button-small button-danger" type="button" data-remove-cms-row>Hapus ${label.toLocaleLowerCase('id-ID')}</button></fieldset>`;
   }
 
-  function renderAdminCms(storefront) {
-    return `<form class="admin-cms-form" data-storefront-form><section class="admin-section"><div class="admin-section-heading"><h2>Kategori</h2><button class="button button-small" type="button" data-add-cms-row="category">Tambah kategori</button></div><div class="admin-cms-grid" data-cms-list="category">${storefront.categories.map((item, index) => cmsRow('category', item, index)).join('')}</div></section>
-      <section class="admin-section"><div class="admin-section-heading"><h2>Banner Beranda</h2><button class="button button-small" type="button" data-add-cms-row="banner">Tambah banner</button></div><div class="admin-cms-grid" data-cms-list="banner">${storefront.banners.map((item, index) => cmsRow('banner', item, index)).join('')}</div></section>
-      <section class="admin-section"><div class="admin-section-heading"><h2>Promo</h2><button class="button button-small" type="button" data-add-cms-row="promotion">Tambah promo</button></div><div class="admin-cms-grid" data-cms-list="promotion">${storefront.promotions.map((item, index) => cmsRow('promotion', item, index)).join('')}</div></section>
-      <section class="admin-section"><div class="admin-section-heading"><h2>Paket reseller</h2></div><div class="admin-fields"><label>Harga paket (Rp)<input name="resellerPlanPrice" type="number" min="149000" step="1000" value="${Number(storefront.resellerPlan.price)}" required /></label><label class="admin-wide">Syarat dan ketentuan<textarea name="resellerPlanTerms" rows="4" maxlength="5000" required>${escapeHtml(storefront.resellerPlan.terms)}</textarea></label></div></section>
-      <section class="admin-section"><div class="admin-section-heading"><h2>Pembayaran QRIS</h2></div><div class="payment-config-note"><strong>QRIS dinamis ${storefront.payment?.available ? 'siap digunakan' : 'belum dikonfigurasi'}.</strong><p>QR dibuat khusus untuk setiap pesanan. Kunci pembayaran hanya dibaca server; gambar QR yang diunggah tidak digunakan untuk checkout.</p>${storefront.payment?.available ? '<p>Daftarkan alamat notifikasi berikut pada pengaturan pembayaran: <code>/api/payments/notify</code>. Gunakan endpoint HTTPS publik.</p>' : '<p>Lengkapi kredensial API QRIS pada environment server. Tanpa kredensial aktif, checkout tetap ditutup. Restart server setelah konfigurasi.</p>'}</div></section>
-      <p class="admin-form-message" data-cms-message role="status" aria-live="polite"></p><button class="button button-primary" type="submit">Simpan konten</button></form>`;
+  function renderAdminCms(storefront, path) {
+    if (path === '/admin/katalog/kategori') {
+      return `<form class="admin-cms-form" data-storefront-form data-storefront-kind="categories"><section class="admin-section"><div class="admin-section-heading"><div><h2>Kategori katalog</h2><p>Kategori yang dipakai produk dan navigasi Belanja.</p></div><button class="button button-primary button-small" type="button" data-add-cms-row="category">Tambah kategori</button></div><div class="admin-cms-grid" data-cms-list="category">${storefront.categories.map((item, index) => cmsRow('category', item, index)).join('')}</div></section><p class="admin-form-message" data-cms-message role="status" aria-live="polite"></p><button class="button button-primary" type="submit">Simpan kategori</button></form>`;
+    }
+    if (path === '/admin/toko/banner') {
+      return `<form class="admin-cms-form" data-storefront-form data-storefront-kind="banners"><section class="admin-section"><div class="admin-section-heading"><div><h2>Banner Beranda</h2><p>Atur gambar dan materi slide yang tampil di toko.</p></div><button class="button button-primary button-small" type="button" data-add-cms-row="banner">Tambah banner</button></div><div class="admin-cms-grid" data-cms-list="banner">${storefront.banners.map((item, index) => cmsRow('banner', item, index)).join('')}</div></section><p class="admin-form-message" data-cms-message role="status" aria-live="polite"></p><button class="button button-primary" type="submit">Simpan banner</button></form>`;
+    }
+    if (path === '/admin/toko/promo') {
+      return `<form class="admin-cms-form" data-storefront-form data-storefront-kind="promotions"><section class="admin-section"><div class="admin-section-heading"><div><h2>Promo toko</h2><p>Kelola penawaran yang tampil di halaman Promo.</p></div><button class="button button-primary button-small" type="button" data-add-cms-row="promotion">Tambah promo</button></div><div class="admin-cms-grid" data-cms-list="promotion">${storefront.promotions.map((item, index) => cmsRow('promotion', item, index)).join('')}</div></section><p class="admin-form-message" data-cms-message role="status" aria-live="polite"></p><button class="button button-primary" type="submit">Simpan promo</button></form>`;
+    }
+    return `<form class="admin-cms-form" data-storefront-form data-storefront-kind="resellerPlan"><section class="admin-section"><div class="admin-section-heading"><div><h2>Program reseller</h2><p>Tetapkan harga paket dan ketentuan yang dilihat sebelum pembelian.</p></div></div><div class="admin-fields"><label>Harga paket (Rp)<input name="resellerPlanPrice" type="number" min="149000" step="1000" value="${Number(storefront.resellerPlan.price)}" required /></label><label class="admin-wide">Syarat dan ketentuan<textarea name="resellerPlanTerms" rows="6" maxlength="5000" required>${escapeHtml(storefront.resellerPlan.terms)}</textarea></label></div></section><p class="admin-form-message" data-cms-message role="status" aria-live="polite"></p><button class="button button-primary" type="submit">Simpan program reseller</button></form>`;
   }
 
   function readAdminSidebarCollapsed() {
@@ -888,25 +1033,50 @@
   }
 
   function adminPageTitle(path) {
+    const titles = {
+      '/admin/produk': 'Produk',
+      '/admin/katalog/kategori': 'Kategori',
+      '/admin/toko/banner': 'Banner Beranda',
+      '/admin/toko/promo': 'Promo toko',
+      '/admin/toko/reseller': 'Program reseller',
+      '/admin/pesanan': 'Pesanan',
+      '/admin/analisa': 'Analisa',
+    };
     if (path.startsWith('/admin/produk')) return 'Produk';
-    if (path === '/admin/konten') return 'Konten toko';
+    if (titles[path]) return titles[path];
     if (path === '/admin/pesanan') return 'Pesanan';
     return 'Ringkasan';
   }
 
   function adminNavigation(path, collapsed) {
-    const items = [
-      { href: '#/admin', label: 'Ringkasan', icon: 'home', active: path === '/admin' },
-      { href: '#/admin/produk', label: 'Produk', icon: 'grid', active: path.startsWith('/admin/produk') },
-      { href: '#/admin/konten', label: 'Konten toko', icon: 'tag', active: path === '/admin/konten' },
-      { href: '#/admin/pesanan', label: 'Pesanan', icon: 'shopping-cart', active: path === '/admin/pesanan' },
-    ];
-    return items.map((item) => `<a class="admin-nav-link" data-admin-nav href="${item.href}" aria-label="${item.label}" ${item.active ? 'aria-current="page"' : ''} title="${collapsed ? item.label : ''}"><span class="admin-nav-icon">${feather(item.icon)}</span><span class="admin-nav-label">${item.label}</span></a>`).join('');
+    const link = (href, label, icon, active, child = false) => `<a class="admin-nav-link${child ? ' admin-nav-child' : ''}" data-admin-nav href="${href}" aria-label="${label}" ${active ? 'aria-current="page"' : ''} title="${collapsed ? label : ''}"><span class="admin-nav-icon">${feather(icon)}</span><span class="admin-nav-label">${label}</span></a>`;
+    const catalogActive = path.startsWith('/admin/produk') || path.startsWith('/admin/katalog/');
+    const storeActive = path.startsWith('/admin/toko/');
+    const catalogHidden = collapsed || !catalogActive;
+    const storeHidden = collapsed || !storeActive;
+    return `${link('#/admin', 'Ringkasan', 'home', path === '/admin')}
+      <section class="admin-nav-group ${catalogActive ? 'is-active' : ''}" data-admin-nav-group>
+        <button class="admin-nav-parent" type="button" data-admin-group-toggle aria-expanded="${!catalogHidden}" title="${collapsed ? 'Katalog' : ''}"><span class="admin-nav-icon">${feather('grid')}</span><span class="admin-nav-label">Katalog</span>${feather('chevron-right','admin-nav-chevron')}</button>
+        <div class="admin-nav-children" data-admin-group-children ${catalogHidden ? 'hidden' : ''}>
+          ${link('#/admin/produk', 'Produk', 'grid', path.startsWith('/admin/produk'), true)}
+          ${link('#/admin/katalog/kategori', 'Kategori', 'tag', path === '/admin/katalog/kategori', true)}
+        </div>
+      </section>
+      <section class="admin-nav-group ${storeActive ? 'is-active' : ''}" data-admin-nav-group>
+        <button class="admin-nav-parent" type="button" data-admin-group-toggle aria-expanded="${!storeHidden}" title="${collapsed ? 'Konten toko' : ''}"><span class="admin-nav-icon">${feather('tag')}</span><span class="admin-nav-label">Konten toko</span>${feather('chevron-right','admin-nav-chevron')}</button>
+        <div class="admin-nav-children" data-admin-group-children ${storeHidden ? 'hidden' : ''}>
+          ${link('#/admin/toko/banner', 'Banner Beranda', 'grid', path === '/admin/toko/banner', true)}
+          ${link('#/admin/toko/promo', 'Promo', 'tag', path === '/admin/toko/promo', true)}
+          ${link('#/admin/toko/reseller', 'Program reseller', 'user', path === '/admin/toko/reseller', true)}
+        </div>
+      </section>
+      ${link('#/admin/pesanan', 'Pesanan', 'shopping-cart', path === '/admin/pesanan')}
+      ${link('#/admin/analisa', 'Analisa', 'grid', path === '/admin/analisa')}`;
   }
 
   function adminOrderCard(order) {
     const fulfillmentOptions = [{ value: 'not_started', label: 'Belum dimulai' }, { value: 'processing', label: 'Diproses' }, { value: 'needs_customer_input', label: 'Menunggu data pelanggan' }, { value: 'fulfilled', label: 'Selesai' }];
-    return `<article class="admin-order-card"><div class="admin-order-head"><div><strong>${escapeHtml(order.id)}</strong><span>${escapeHtml(order.customer?.name || 'Akun tidak tersedia')} · ${escapeHtml(order.customer?.email || '')}</span></div><strong>${rupiah(order.total)}</strong></div><p>${order.kind === 'reseller-plan' ? 'Paket reseller' : order.items.map((item) => `${escapeHtml(item.name)} × ${item.quantity}`).join(', ')}</p><div class="admin-order-status"><span class="status-pill">Pembayaran: ${escapeHtml(order.paymentStatus)}</span><span class="status-pill">Pemenuhan: ${escapeHtml(order.fulfillmentStatus)}</span></div>${order.paymentVerification ? `<p class="admin-verified-note">Dikonfirmasi otomatis · ${new Date(order.paymentVerification.verifiedAt).toLocaleString('id-ID')}</p>` : order.paymentStatus === 'pending' ? '<p class="admin-order-help">Status berubah setelah pembayaran terkonfirmasi.</p>' : ''}${order.paymentStatus === 'paid' ? `<form class="admin-fulfillment-form" data-update-fulfillment="${escapeHtml(order.id)}"><div class="admin-field"><span class="admin-field-label">Status pemenuhan</span>${customDropdown('status', 'Status pemenuhan', fulfillmentOptions, order.fulfillmentStatus, 'admin-dropdown')}</div><label>Catatan pemenuhan<input name="note" maxlength="1000" value="${escapeHtml(order.fulfillmentNote || '')}" /></label><button class="button button-small button-primary" type="submit">Simpan status</button></form>` : ''}</article>`;
+    return `<article class="admin-order-card"><div class="admin-order-head"><div><strong>${escapeHtml(order.id)}</strong><span>${escapeHtml(order.customer?.name || 'Akun tidak tersedia')} · ${escapeHtml(order.customer?.email || '')}</span></div><strong>${rupiah(order.total)}</strong></div><p>${order.kind === 'reseller-plan' ? 'Paket reseller' : order.items.map((item) => `${escapeHtml(item.name)} × ${item.quantity}${(item.specifications || []).length ? ' · ' + item.specifications.map((specification) => escapeHtml(specification.name) + ': ' + escapeHtml(specification.label)).join(', ') : ''}`).join(', ')}</p><div class="admin-order-status"><span class="status-pill">Pembayaran: ${escapeHtml(order.paymentStatus)}</span><span class="status-pill">Pemenuhan: ${escapeHtml(order.fulfillmentStatus)}</span></div>${order.paymentVerification ? `<p class="admin-verified-note">Dikonfirmasi otomatis · ${new Date(order.paymentVerification.verifiedAt).toLocaleString('id-ID')}</p>` : order.paymentStatus === 'pending' && order.paymentInitialized === false ? '<p class="admin-order-help">Pesanan tersimpan. QRIS belum dibuat pada tahap ini.</p>' : order.paymentStatus === 'pending' ? '<p class="admin-order-help">Status berubah setelah pembayaran terkonfirmasi.</p>' : ''}${order.paymentStatus === 'paid' ? `<form class="admin-fulfillment-form" data-update-fulfillment="${escapeHtml(order.id)}"><div class="admin-field"><span class="admin-field-label">Status pemenuhan</span>${customDropdown('status', 'Status pemenuhan', fulfillmentOptions, order.fulfillmentStatus, 'admin-dropdown')}</div><label>Catatan pemenuhan<input name="note" maxlength="1000" value="${escapeHtml(order.fulfillmentNote || '')}" /></label><button class="button button-small button-primary" type="submit">Simpan status</button></form>` : ''}</article>`;
   }
 
   async function renderAdminPage(path) {
@@ -926,12 +1096,37 @@
         ? `<section class="admin-section admin-product-detail-page"><a class="admin-back-products" href="#/admin/produk">${feather('arrow-left')}<span>Kembali ke produk</span></a><div class="admin-product-detail-heading"><div><span class="admin-eyebrow">EDITOR PRODUK</span><h1>${escapeHtml(selectedProduct.name)}</h1><p>Perbarui informasi, harga, stok, dan gambar yang tampil di katalog.</p></div><span class="admin-product-detail-id">${escapeHtml(selectedProduct.id)}</span></div><section class="admin-product-edit-card"><div class="admin-product-edit-preview">${selectedProduct.image ? `<img src="${escapeHtml(selectedProduct.image)}" alt="Pratinjau ${escapeHtml(selectedProduct.name)}" />` : `<div class="admin-product-placeholder"><span>Pratinjau produk</span><strong>${escapeHtml(selectedProduct.name.slice(0,1).toLocaleUpperCase('id-ID'))}</strong></div>`}<div><strong>${escapeHtml(selectedProduct.name)}</strong><span>${rupiah(selectedProduct.price)} · ${selectedProduct.stock === null || selectedProduct.stock === undefined ? 'Stok tidak dibatasi' : `${Number(selectedProduct.stockAvailable ?? selectedProduct.stock).toLocaleString('id-ID')} tersedia`}</span></div></div>${productFields(selectedProduct)}</section></section>`
         : `<section class="admin-section"><a class="admin-back-products" href="#/admin/produk">${feather('arrow-left')}<span>Kembali ke produk</span></a><div class="admin-empty-state"><span class="admin-empty-icon">${feather('package')}</span><h1>Produk tidak ditemukan</h1><p>Produk mungkin sudah dihapus. Muat kembali katalog untuk memilih produk lain.</p><a class="button button-primary" href="#/admin/produk">Buka katalog produk</a></div></section>`;
     } else if (path === '/admin/produk') content = `<section class="admin-section admin-catalog-page"><div class="admin-products-heading"><div><span class="admin-eyebrow">KATALOG TOKO</span><h1>Produk</h1><p>Atur katalog, stok, dan harga produk dalam satu tempat.</p></div><span class="admin-product-count"><strong>${productResult.products.length}</strong><small>produk</small></span></div><details class="admin-product-editor admin-create-product"><summary><span class="admin-add-product-icon">${feather('plus')}</span><span class="admin-add-product-copy"><strong>Tambah produk</strong><small>Buat produk baru di katalog.</small></span><span class="admin-create-chevron">${feather('chevron-down')}</span></summary>${productFields({ category: CATEGORIES[0]?.slug, orderMode: 'ready', preOrderConfirmed: true, terms: {}, stock: null }, true)}</details><div class="admin-product-toolbar"><label class="admin-product-search">${feather('search')}<input type="search" placeholder="Cari nama atau ID produk" aria-label="Cari produk" data-admin-product-search /></label><label class="admin-select-all"><input type="checkbox" data-select-all-products /><span>Pilih semua</span></label><div class="admin-product-bulk-actions"><span data-selected-count>0 dipilih</span><button class="button button-small" type="button" data-product-bulk="archive" disabled>Arsipkan</button><button class="button button-small" type="button" data-product-bulk="restore" disabled>Pulihkan</button><button class="button button-small button-danger" type="button" data-product-bulk="delete" disabled>Hapus</button></div></div><div class="admin-product-list" data-admin-product-list>${productResult.products.map((product) => productCard(product, { variant: 'admin' })).join('') || `<div class="admin-empty-state"><span class="admin-empty-icon">${feather('package')}</span><h2>Katalog masih kosong</h2><p>Tambahkan produk pertama agar bisa tampil di toko.</p></div>`}</div></section>`;
-    else if (path === '/admin/konten') content = `<section class="admin-section"><div class="admin-products-heading"><div><h1>Konten toko</h1><p>Kelola kategori, banner Beranda, promo, dan paket reseller.</p></div></div>${renderAdminCms(storefront)}</section>`;
+    else if (path === '/admin/katalog/kategori') content = `<section class="admin-section"><div class="admin-products-heading"><div><span class="admin-eyebrow">KATALOG TOKO</span><h1>Kategori</h1><p>Atur kelompok produk yang tersedia di Belanja.</p></div></div>${renderAdminCms(storefront, path)}</section>`;
+    else if (['/admin/toko/banner', '/admin/toko/promo', '/admin/toko/reseller'].includes(path)) {
+      const headings = {
+        '/admin/toko/banner': ['Banner Beranda', 'Kelola slide dan gambar yang ditampilkan di halaman utama.'],
+        '/admin/toko/promo': ['Promo toko', 'Atur penawaran yang tampil di halaman Promo.'],
+        '/admin/toko/reseller': ['Program reseller', 'Atur harga paket dan ketentuan yang tampil sebelum pembelian.'],
+      };
+      content = `<section class="admin-section"><div class="admin-products-heading"><div><span class="admin-eyebrow">KONTEN TOKO</span><h1>${headings[path][0]}</h1><p>${headings[path][1]}</p></div></div>${renderAdminCms(storefront, path)}</section>`;
+    }
     else if (path === '/admin/pesanan') content = `<section class="admin-section"><div class="admin-products-heading"><div><h1>Pesanan</h1><p>Lihat status pembayaran dan perbarui pemenuhan pesanan.</p></div><span class="admin-product-count"><strong>${orderResult.orders.length}</strong><small>pesanan</small></span></div><div class="admin-order-list">${orderResult.orders.map(adminOrderCard).join('') || `<div class="admin-empty-state"><span class="admin-empty-icon">${feather('shopping-cart')}</span><h2>Belum ada pesanan</h2><p>Pesanan pelanggan akan muncul di sini.</p></div>`}</div></section>`;
+    else if (path === '/admin/analisa') {
+      const verifiedOrders = orderResult.orders.filter((order) => order.paymentStatus === 'paid' && order.status !== 'refunded');
+      const grossRevenue = verifiedOrders.reduce((sum, order) => sum + Number(order.total || 0), 0);
+      const verifiedUnits = verifiedOrders.reduce((sum, order) => sum + (order.kind === 'products' ? order.items.reduce((count, item) => count + Number(item.quantity || 0), 0) : 0), 0);
+      const productTotals = new Map();
+      for (const order of verifiedOrders) {
+        if (order.kind !== 'products') continue;
+        for (const item of order.items || []) {
+          const prior = productTotals.get(item.productId) || { name: item.name, quantity: 0, total: 0 };
+          prior.quantity += Number(item.quantity || 0);
+          prior.total += Number(item.lineTotal || 0);
+          productTotals.set(item.productId, prior);
+        }
+      }
+      const topProducts = [...productTotals.values()].sort((first, second) => second.quantity - first.quantity).slice(0, 5);
+      content = `<section class="admin-section"><div class="admin-products-heading"><div><span class="admin-eyebrow">DATA TERVERIFIKASI</span><h1>Analisa penjualan</h1><p>Angka dihitung dari pesanan yang status pembayarannya sudah terverifikasi.</p></div></div><div class="admin-metrics"><a href="#/admin/pesanan"><span>Omzet terverifikasi</span><strong>${rupiah(grossRevenue)}</strong></a><a href="#/admin/pesanan"><span>Pesanan lunas</span><strong>${verifiedOrders.length}</strong></a><a href="#/admin/pesanan"><span>Unit produk terjual</span><strong>${verifiedUnits}</strong></a></div><section class="admin-section admin-analysis-table"><div class="admin-section-heading"><div><h2>Produk teratas</h2><p>Berdasarkan unit pada pesanan yang lunas.</p></div></div>${topProducts.length ? `<div class="admin-order-list">${topProducts.map((item) => `<article class="admin-order-card"><div class="admin-order-head"><strong>${escapeHtml(item.name)}</strong><strong>${item.quantity} unit</strong></div><p>Nilai pesanan tercatat ${rupiah(item.total)}</p></article>`).join('')}</div>` : `<div class="admin-empty-state"><h2>Belum ada data penjualan</h2><p>Produk teratas akan muncul setelah pembayaran pesanan terverifikasi.</p></div>`}</section></section>`;
+    }
     else {
       const pending = orderResult.orders.filter((order) => order.paymentStatus === 'pending').length;
       const paid = orderResult.orders.filter((order) => order.paymentStatus === 'paid').length;
-      content = `<section class="admin-section"><div class="admin-products-heading"><div><h1>Ringkasan toko</h1><p>Kelola katalog, konten, dan pesanan Bacshop.</p></div></div><div class="admin-metrics"><a href="#/admin/produk"><span>Produk</span><strong>${productResult.products.length}</strong></a><a href="#/admin/pesanan"><span>Menunggu pembayaran</span><strong>${pending}</strong></a><a href="#/admin/pesanan"><span>Pembayaran terverifikasi</span><strong>${paid}</strong></a></div><div class="admin-shortcuts"><a class="button button-primary" href="#/admin/produk">Kelola produk</a><a class="button" href="#/admin/konten">Atur konten toko</a><a class="button" href="#/admin/pesanan">Periksa pesanan</a></div>${pending ? `<h2>Menunggu pembayaran</h2><div class="admin-order-list">${orderResult.orders.filter((order) => order.paymentStatus === 'pending').slice(0, 5).map(adminOrderCard).join('')}</div>` : ''}</section>`;
+      content = `<section class="admin-section"><div class="admin-products-heading"><div><h1>Ringkasan toko</h1><p>Kelola katalog, konten, dan pesanan Bacshop.</p></div></div><div class="admin-metrics"><a href="#/admin/produk"><span>Produk</span><strong>${productResult.products.length}</strong></a><a href="#/admin/pesanan"><span>Menunggu pembayaran</span><strong>${pending}</strong></a><a href="#/admin/pesanan"><span>Pembayaran terverifikasi</span><strong>${paid}</strong></a></div><div class="admin-shortcuts"><a class="button button-primary" href="#/admin/produk">Kelola produk</a><a class="button" href="#/admin/toko/banner">Atur konten toko</a><a class="button" href="#/admin/pesanan">Periksa pesanan</a><a class="button" href="#/admin/analisa">Lihat analisa</a></div>${pending ? `<h2>Pesanan menunggu pembayaran</h2><div class="admin-order-list">${orderResult.orders.filter((order) => order.paymentStatus === 'pending').slice(0, 5).map(adminOrderCard).join('')}</div>` : ''}</section>`;
     }
     const collapsed = readAdminSidebarCollapsed();
     const title = adminPageTitle(path);
@@ -940,9 +1135,9 @@
       <aside class="admin-sidebar" id="admin-navigation" aria-label="Navigasi admin">
         <div class="admin-sidebar-brand-row"><a class="admin-sidebar-brand" href="#/admin" aria-label="Bacshop admin"><span class="admin-brand-name">Bacshop</span><span>ADMIN</span></a><button class="admin-sidebar-collapse" type="button" data-admin-collapse aria-controls="admin-navigation" aria-expanded="${!collapsed}" aria-label="${collapsed ? 'Perluas' : 'Ringkas'} navigasi" title="${collapsed ? 'Perluas navigasi' : 'Ringkas navigasi'}">${feather(collapsed ? 'chevron-right' : 'chevron-left')}</button></div>
         <p class="admin-nav-heading">WORKSPACE</p><nav class="admin-nav" aria-label="Menu admin">${adminNavigation(path, collapsed)}</nav>
-        <div class="admin-sidebar-bottom"><a class="admin-store-link" href="#/" aria-label="Lihat toko" title="${collapsed ? 'Lihat toko' : ''}">${feather('arrow-right')}<span>Lihat toko</span></a><div class="admin-sidebar-account" aria-label="Admin ${escapeHtml(session.email)}"><span class="admin-account-mark" aria-hidden="true">${escapeHtml((session.email || 'A').slice(0, 1).toLocaleUpperCase('id-ID'))}</span><span class="admin-account-copy"><strong>Admin</strong><small>${escapeHtml(session.email)}</small></span></div></div>
+        <div class="admin-sidebar-bottom"><a class="admin-store-link" href="#/admin-preview" aria-label="Lihat toko" title="${collapsed ? 'Lihat toko' : ''}">${feather('arrow-right')}<span>Lihat toko</span></a><div class="admin-sidebar-account" aria-label="Admin ${escapeHtml(session.email)}"><span class="admin-account-mark" aria-hidden="true">${escapeHtml((session.email || 'A').slice(0, 1).toLocaleUpperCase('id-ID'))}</span><span class="admin-account-copy"><strong>Admin</strong><small>${escapeHtml(session.email)}</small></span></div></div>
       </aside>
-      <div class="admin-workspace"><header class="admin-topbar"><button class="admin-menu-toggle" type="button" data-admin-menu-toggle aria-controls="admin-navigation" aria-expanded="false" aria-label="Buka navigasi"><span aria-hidden="true"></span></button><div class="admin-page-context"><span>ADMIN BACSHOP <i aria-hidden="true">/</i></span><strong>${escapeHtml(title)}</strong></div><div class="admin-topbar-actions"><span class="admin-topbar-email">${escapeHtml(session.email)}</span><a class="admin-view-store" href="#/">Lihat toko ${feather('arrow-right')}</a><button class="button button-small admin-top-logout" type="button" data-admin-logout>Keluar</button></div></header>
+      <div class="admin-workspace"><header class="admin-topbar"><button class="admin-menu-toggle" type="button" data-admin-menu-toggle aria-controls="admin-navigation" aria-expanded="false" aria-label="Buka navigasi"><span aria-hidden="true"></span></button><div class="admin-page-context"><span>ADMIN BACSHOP <i aria-hidden="true">/</i></span><strong>${escapeHtml(title)}</strong></div><div class="admin-topbar-actions"><span class="admin-topbar-email">${escapeHtml(session.email)}</span><a class="admin-view-store" href="#/admin-preview">Lihat toko ${feather('arrow-right')}</a><button class="button button-small admin-top-logout" type="button" data-admin-logout>Keluar</button></div></header>
         <main class="admin-products" id="main" tabindex="-1">${content}</main>
       </div>
     </div>`;
@@ -994,6 +1189,8 @@
         value.dataset.label = option.dataset.optionLabel || option.textContent.trim();
         if (option.dataset.optionMinimum !== undefined) value.dataset.minimum = option.dataset.optionMinimum;
         else delete value.dataset.minimum;
+        if (option.dataset.optionSlug) value.dataset.slug = option.dataset.optionSlug;
+        else delete value.dataset.slug;
         label.textContent = value.dataset.label;
         trigger.setAttribute('aria-label', `${dropdown.querySelector('.custom-dropdown-menu')?.getAttribute('aria-label') || 'Pilihan'}: ${value.dataset.label}`);
         menu.hidden = true;
@@ -1053,6 +1250,12 @@
       menuToggle?.setAttribute('aria-label', 'Buka navigasi');
       if (restoreFocus) menuToggle?.focus();
     };
+    app.querySelectorAll('[data-admin-group-toggle]').forEach((button) => button.addEventListener('click', () => {
+      const children = button.closest('[data-admin-nav-group]')?.querySelector('[data-admin-group-children]');
+      if (!children || shell?.classList.contains('is-sidebar-collapsed')) return;
+      children.hidden = !children.hidden;
+      button.setAttribute('aria-expanded', String(!children.hidden));
+    }));
     collapseButton?.addEventListener('click', () => {
       const collapsed = !shell?.classList.contains('is-sidebar-collapsed');
       shell?.classList.toggle('is-sidebar-collapsed', collapsed);
@@ -1168,13 +1371,16 @@
       if (product.orderMode === 'ready') product.preOrderConfirmed = true;
       product.terms = termsFromTextarea(product.terms || '');
       try {
+        const specificationsText = String(fields.get('specificationsJson') || '').trim();
+        product.specifications = specificationsText ? JSON.parse(specificationsText) : [];
+        delete product.specificationsJson;
         const result = await requestApi(isCreate ? '/api/admin/products' : `/api/admin/products/${encodeURIComponent(product.id)}`, { method: isCreate ? 'POST' : 'PUT', body: { product } });
         PRODUCTS = isCreate ? [...PRODUCTS, result.product] : PRODUCTS.map((item) => item.id === result.product.id ? result.product : item);
         if (result.product.orderMode === 'preorder' && !result.product.preOrderConfirmed) writeCart(cart.filter((item) => item.id !== result.product.id));
         showToast(isCreate ? 'Produk berhasil ditambahkan.' : 'Perubahan produk tersimpan.');
         await render();
       } catch (error) {
-        message.textContent = error.message;
+        message.textContent = error instanceof SyntaxError ? 'Format spesifikasi harus berupa JSON yang valid.' : error.message;
         message.classList.add('is-error');
       }
     }));
@@ -1235,17 +1441,15 @@
       const form = event.currentTarget;
       const message = form.querySelector('[data-cms-message]');
       const fields = new FormData(form);
-      const storefront = {
-        ...STOREFRONT,
-        categories: readCmsRows(form, 'category'),
-        banners: readCmsRows(form, 'banner'),
-        promotions: readCmsRows(form, 'promotion'),
-        resellerPlan: { price: Number(fields.get('resellerPlanPrice')), terms: fields.get('resellerPlanTerms') },
-      };
+      const kind = form.dataset.storefrontKind;
+      const storefront = kind === 'categories' ? { categories: readCmsRows(form, 'category') }
+        : kind === 'banners' ? { banners: readCmsRows(form, 'banner') }
+          : kind === 'promotions' ? { promotions: readCmsRows(form, 'promotion') }
+            : { resellerPlan: { price: Number(fields.get('resellerPlanPrice')), terms: fields.get('resellerPlanTerms') } };
       try {
         STOREFRONT = await requestApi('/api/admin/storefront', { method: 'PUT', body: { storefront } });
         CATEGORIES = STOREFRONT.categories;
-        message.textContent = 'Konten toko tersimpan.';
+        message.textContent = 'Perubahan tersimpan.';
         message.classList.remove('is-error');
       } catch (error) { message.textContent = error.message; message.classList.add('is-error'); }
     });
@@ -1440,7 +1644,7 @@
     if (path.startsWith('/preview/')) return null;
     if (path === '/') return renderHome();
     if (path === '/kategori' || path.startsWith('/kategori/')) return renderCatalog(decodeURIComponent(path.split('/')[2] || 'semua'), params);
-    if (path.startsWith('/produk/')) return renderDetail(path.split('/')[2]);
+    if (path.startsWith('/produk/')) return renderDetail(path.split('/')[2], params);
     if (path === '/keranjang') return renderCartPage();
     if (path === '/faq') return renderFaq();
     return renderInfoPage(path) || renderNotice(path);
@@ -1496,7 +1700,33 @@
   async function render() {
     stopPaymentPolling();
     const { path } = getRoute();
+    if (!['/checkout', '/masuk', '/daftar'].includes(path) && checkoutItemsOverride) writeCheckoutOverride(null);
     document.body.classList.remove('admin-drawer-open');
+    if (path === '/admin-preview') {
+      try {
+        const session = await requestApi('/api/admin/session');
+        if (!session.authenticated) throw new Error('Sesi admin tidak aktif.');
+        adminPreviewMode = true;
+        try { sessionStorage.setItem('bacshop.admin.preview', 'true'); } catch { /* Preview remains active for this page view. */ }
+        window.location.hash = '#/';
+      } catch {
+        adminPreviewMode = false;
+        try { sessionStorage.removeItem('bacshop.admin.preview'); } catch { /* Storage is optional. */ }
+        showToast('Masuk sebagai admin untuk membuka pratinjau toko.');
+        window.location.hash = '#/admin';
+      }
+      return;
+    }
+    if (path === '/admin' || path.startsWith('/admin/')) {
+      adminPreviewMode = false;
+      try { sessionStorage.removeItem('bacshop.admin.preview'); } catch { /* Storage is optional. */ }
+    }
+    const previewBlockedRoute = path === '/masuk' || path === '/daftar' || path === '/checkout' || path === '/keranjang' || path === '/akun' || path.startsWith('/pesanan');
+    if (adminPreviewMode && previewBlockedRoute) {
+      showToast('Pratinjau toko hanya untuk melihat halaman. Akun dan pesanan tidak dibuka.');
+      window.location.hash = '#/';
+      return;
+    }
     if (path === '/preview/admin' || path.startsWith('/preview/admin/')) {
       window.location.hash = '#/admin';
       return;
@@ -1604,26 +1834,34 @@
       filterFaq();
     }));
 
-    const resellerChoiceButtons = [...app.querySelectorAll('[data-reseller-choice]')];
-    resellerChoiceButtons.forEach((button) => button.addEventListener('click', () => {
-      const selected = button.dataset.resellerChoice;
-      resellerChoiceButtons.forEach((entry) => { const active = entry === button; entry.classList.toggle('is-active', active); entry.setAttribute('aria-selected', String(active)); });
-      app.querySelectorAll('[data-reseller-panel]').forEach((panel) => { panel.hidden = panel.dataset.resellerPanel !== selected; });
-    }));
     const bulkProduct = app.querySelector('[data-bulk-product]');
     const bulkQuantity = app.querySelector('[data-bulk-quantity]');
     const bulkResult = app.querySelector('[data-bulk-result]');
+    const bulkProductLink = app.querySelector('[data-bulk-product-link]');
     const updateBulkCalculator = () => {
       if (!bulkProduct || !bulkQuantity || !bulkResult) return;
       const minimum = Number(bulkProduct.dataset.minimum) || 0;
       const quantity = Math.max(0, Math.min(99, Number(bulkQuantity.value) || 0));
       bulkQuantity.min = String(minimum || 1);
+      const selectedProduct = PRODUCTS.find((product) => product.id === bulkProduct.value);
+      if (bulkProductLink && selectedProduct) {
+        bulkProductLink.href = `#/produk/${encodeURIComponent(selectedProduct.slug)}?bulk=1&qty=${quantity}`;
+        bulkProductLink.setAttribute('aria-disabled', String(quantity < minimum));
+        bulkProductLink.classList.toggle('is-disabled', quantity < minimum);
+      }
       bulkResult.textContent = quantity >= minimum
-        ? `Jumlah ${quantity} memenuhi minimum ${minimum} unit. Harga reseller terbuka setelah pesanan ini dibayar dan dikonfirmasi.`
-        : `Minimum ${minimum} unit untuk ${bulkProduct.dataset.label || 'produk ini'}. Tambah ${minimum - quantity} unit lagi; akses baru aktif setelah pembayaran dikonfirmasi.`;
+        ? `${selectedProduct?.name || 'Produk'}: ${quantity} unit, memenuhi minimum ${minimum}. Akses harga khusus aktif setelah pembayaran diverifikasi.`
+        : `Minimum ${minimum} unit untuk ${selectedProduct?.name || 'produk ini'}; tambah ${minimum - quantity} unit lagi.`;
     };
-    bulkProduct?.addEventListener('change', updateBulkCalculator);
+    bulkProduct?.addEventListener('change', () => {
+      const minimum = Number(bulkProduct.dataset.minimum) || 1;
+      if (Number(bulkQuantity?.value) < minimum && bulkQuantity) bulkQuantity.value = String(minimum);
+      updateBulkCalculator();
+    });
     bulkQuantity?.addEventListener('input', updateBulkCalculator);
+    bulkProductLink?.addEventListener('click', (event) => {
+      if (bulkProductLink.getAttribute('aria-disabled') === 'true') event.preventDefault();
+    });
     updateBulkCalculator();
 
     app.querySelectorAll('[data-search-form]').forEach((form) => {
@@ -1648,6 +1886,63 @@
         }
       });
     });
+    app.querySelectorAll('[data-purchase-open]').forEach((button) => button.addEventListener('click', () => {
+      if (adminPreviewMode) { showToast('Mode pratinjau: pesanan tidak dapat dibuat.'); return; }
+      const product = PRODUCTS.find((entry) => entry.id === button.dataset.purchaseOpen);
+      if (!product) return;
+      if (product.stockAvailable !== null && product.stockAvailable !== undefined && Number(product.stockAvailable) < 1) {
+        showToast('Stok produk sedang habis.');
+        return;
+      }
+      const dialog = document.createElement('dialog');
+      dialog.className = 'product-purchase-dialog';
+      dialog.innerHTML = purchaseDialogMarkup(product, button.dataset.purchaseMode, button.dataset.defaultQuantity || 1);
+      app.append(dialog);
+      const form = dialog.querySelector('[data-purchase-form]');
+      const quantityField = dialog.querySelector('[data-purchase-quantity]');
+      const submitButton = dialog.querySelector('[data-purchase-submit]');
+      const errorMessage = dialog.querySelector('[data-purchase-error]');
+      const selectedSpecifications = () => Object.fromEntries([...dialog.querySelectorAll('[data-purchase-specification]')].map((field) => [field.dataset.purchaseSpecification, field.value]).filter(([, value]) => value));
+      const updatePreview = () => {
+        const resolved = resolveClientSpecifications(product, selectedSpecifications());
+        const price = dialog.querySelector('[data-purchase-price]');
+        if (price) price.textContent = resolved ? rupiah(resolved.unitPrice) : 'Pilih spesifikasi';
+        if (submitButton) submitButton.disabled = !resolved;
+      };
+      dialog.querySelectorAll('[data-purchase-specification]').forEach((field) => field.addEventListener('change', updatePreview));
+      quantityField?.addEventListener('input', () => {
+        if (errorMessage) { errorMessage.hidden = true; errorMessage.textContent = ''; }
+      });
+      dialog.querySelectorAll('[data-close-purchase]').forEach((closeButton) => closeButton.addEventListener('click', () => dialog.close()));
+      dialog.addEventListener('click', (event) => { if (event.target === dialog) dialog.close(); });
+      dialog.addEventListener('close', () => dialog.remove(), { once: true });
+      form?.addEventListener('submit', (event) => {
+        event.preventDefault();
+        const selection = resolveClientSpecifications(product, selectedSpecifications());
+        const quantity = Number(quantityField?.value);
+        if (!selection) { form.reportValidity(); return; }
+        if (!Number.isInteger(quantity) || quantity < 1 || quantity > 99) {
+          if (errorMessage) { errorMessage.hidden = false; errorMessage.textContent = 'Jumlah harus antara 1 dan 99.'; }
+          return;
+        }
+        if (product.stockAvailable !== null && product.stockAvailable !== undefined && quantity > Number(product.stockAvailable)) {
+          if (errorMessage) { errorMessage.hidden = false; errorMessage.textContent = `Stok tersisa ${Number(product.stockAvailable)} unit.`; }
+          return;
+        }
+        const item = { id: product.id, quantity, specifications: selection.values };
+        if (button.dataset.purchaseMode === 'buy') {
+          writeCheckoutOverride([item]);
+          dialog.close();
+          window.location.hash = '#/checkout';
+          return;
+        }
+        addToCart(item.id, item.quantity, item.specifications);
+        dialog.close();
+      });
+      updatePreview();
+      dialog.showModal();
+      quantityField?.focus({ preventScroll: true });
+    }));
     app.querySelectorAll('[data-add-to-cart]').forEach((button) => button.addEventListener('click', () => addToCart(button.dataset.addToCart)));
     app.querySelectorAll('[data-quantity]').forEach((button) => button.addEventListener('click', () => updateQuantity(button.dataset.quantity, Number(button.dataset.delta))));
     app.querySelectorAll('[data-cart-quantity]').forEach((input) => input.addEventListener('change', () => setCartQuantity(input.dataset.cartQuantity, input.value)));

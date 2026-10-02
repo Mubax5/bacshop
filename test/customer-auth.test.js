@@ -46,6 +46,10 @@ async function request(route, { method = 'GET', body, cookie, headers = {} } = {
   return { response, data };
 }
 
+async function createQris(orderId, cookie) {
+  return request(`/api/orders/${encodeURIComponent(orderId)}/create-qris`, { method: 'POST', cookie, body: {} });
+}
+
 function cookieFrom(response) {
   return response.headers.get('set-cookie')?.split(';', 1)[0];
 }
@@ -150,16 +154,21 @@ after(async () => {
   if (midtransServer) await new Promise((resolve) => midtransServer.close(resolve));
 });
 
-test('checkout creates a Midtrans QRIS but exposes only a generic QR code experience', async () => {
+test('checkout confirms the order before creating a dynamic QRIS on the payment step', async () => {
   midtransRequests = [];
   const registration = await request('/api/auth/register', {
     method: 'POST', body: { name: 'QR Buyer', email: 'midtrans@example.test', password: 'BuyerPass123!' },
   });
   const buyerCookie = cookieFrom(registration.response);
-  const order = await request('/api/orders', { method: 'POST', cookie: buyerCookie, body: { kind: 'reseller-plan' } });
-  assert.equal(order.response.status, 201);
-  assert.equal(order.data.order.total, 149000);
-  assert.equal(order.data.order.paymentStatus, 'pending');
+  const confirmed = await request('/api/orders', { method: 'POST', cookie: buyerCookie, body: { kind: 'reseller-plan' } });
+  assert.equal(confirmed.response.status, 201);
+  assert.equal(confirmed.data.order.total, 149000);
+  assert.equal(confirmed.data.order.paymentStatus, 'pending');
+  assert.equal(confirmed.data.order.paymentInitialized, false);
+  assert.equal(confirmed.data.order.qrisImage, undefined);
+  assert.equal(midtransRequests.some((entry) => entry.path === '/v2/charge'), false, 'order review does not create a payment');
+  const order = await createQris(confirmed.data.order.id, buyerCookie);
+  assert.equal(order.response.status, 200);
   assert.match(order.data.order.qrisImage, /^data:image\/png;base64,/);
   assert.equal(order.data.order.paymentProvider, 'qris_dynamic');
   const charge = midtransRequests.find((entry) => entry.method === 'POST' && entry.path === '/v2/charge');
@@ -191,27 +200,29 @@ test('mismatched provider response gives a useful sanitized diagnostic', async (
     method: 'POST', body: { name: 'QR Buyer', email: 'provider-mismatch@example.test', password: 'BuyerPass123!' },
   });
   const buyerCookie = cookieFrom(registration.response);
-  const order = await request('/api/orders', { method: 'POST', cookie: buyerCookie, body: { kind: 'reseller-plan' } });
+  const confirmed = await request('/api/orders', { method: 'POST', cookie: buyerCookie, body: { kind: 'reseller-plan' } });
+  const order = await createQris(confirmed.data.order.id, buyerCookie);
   midtransChargeResponse = null;
 
   assert.equal(order.response.status, 502);
-  assert.match(serverOutput, /"httpStatus":200,"statusCode":"202","statusMessage":"Merchant onboarding incomplete","responseFields":\["status_code","status_message","shouldNotLog"\]/);
+  assert.match(order.data.error, /kode respons/);
   assert.doesNotMatch(serverOutput, /never-print-this-secret/);
   assert.doesNotMatch(serverOutput, /test-server-key/);
 });
 
-test('an ambiguous successful QRIS response stays in the buyer order list', async () => {
+test('an ambiguous payment response leaves the confirmed order visible without a QR image', async () => {
   midtransChargeResponse = { status_code: '202', status_message: 'Charge pending review' };
   const registration = await request('/api/auth/register', {
     method: 'POST', body: { name: 'QR Buyer', email: 'ambiguous-provider@example.test', password: 'BuyerPass123!' },
   });
   const buyerCookie = cookieFrom(registration.response);
-  const create = await request('/api/orders', { method: 'POST', cookie: buyerCookie, body: { kind: 'reseller-plan' } });
+  const confirmed = await request('/api/orders', { method: 'POST', cookie: buyerCookie, body: { kind: 'reseller-plan' } });
+  const create = await createQris(confirmed.data.order.id, buyerCookie);
   midtransChargeResponse = null;
   const list = await request('/api/orders', { cookie: buyerCookie });
 
   assert.equal(create.response.status, 502);
-  assert.match(create.data.error, /Periksa menu Pesanan sebelum mencoba lagi/);
+  assert.match(create.data.error, /Respons Midtrans tidak cocok/);
   assert.equal(list.response.status, 200);
   assert.equal(list.data.orders.length, 1, 'the buyer can find an uncertain payment before trying again');
   assert.equal(list.data.orders[0].paymentStatus, 'pending');
@@ -219,7 +230,7 @@ test('an ambiguous successful QRIS response stays in the buyer order list', asyn
   assert.equal(list.data.orders[0].qrisImage, undefined);
 });
 
-test('an inactive Midtrans QRIS channel gives an actionable error and removes the rejected draft', async () => {
+test('an inactive Midtrans QRIS channel gives an actionable error and preserves the confirmed order', async () => {
   midtransChargeResponse = {
     status_code: '402',
     status_message: 'Payment channel is not activated.',
@@ -229,14 +240,16 @@ test('an inactive Midtrans QRIS channel gives an actionable error and removes th
     method: 'POST', body: { name: 'QR Buyer', email: 'inactive-channel@example.test', password: 'BuyerPass123!' },
   });
   const buyerCookie = cookieFrom(registration.response);
-  const create = await request('/api/orders', { method: 'POST', cookie: buyerCookie, body: { kind: 'reseller-plan' } });
+  const confirmed = await request('/api/orders', { method: 'POST', cookie: buyerCookie, body: { kind: 'reseller-plan' } });
+  const create = await createQris(confirmed.data.order.id, buyerCookie);
   midtransChargeResponse = null;
   const list = await request('/api/orders', { cookie: buyerCookie });
 
   assert.equal(create.response.status, 502);
-  assert.match(create.data.error, /akun Production yang sama dengan MIDTRANS_SERVER_KEY/);
+  assert.match(create.data.error, /Kanal QRIS dinamis belum diaktifkan untuk Core API/);
   assert.equal(list.response.status, 200);
-  assert.equal(list.data.orders.length, 0, 'a provider-rejected draft should not look like a payment the buyer can complete');
+  assert.equal(list.data.orders.length, 1, 'the confirmed order remains available while the QRIS channel is provisioned');
+  assert.equal(list.data.orders[0].paymentInitialized, false);
 });
 
 test('buyer can register, log in, and read their own profile', async () => {
@@ -363,8 +376,10 @@ test('Midtrans QRIS payment status is verified before reseller access is unlocke
     method: 'POST', body: { name: 'QR Buyer', email: 'qris@example.test', password: 'BuyerPass123!' },
   });
   const buyerCookie = cookieFrom(registration.response);
-  const order = await request('/api/orders', { method: 'POST', cookie: buyerCookie, body: { kind: 'reseller-plan' } });
-  assert.equal(order.response.status, 201);
+  const confirmed = await request('/api/orders', { method: 'POST', cookie: buyerCookie, body: { kind: 'reseller-plan' } });
+  assert.equal(confirmed.response.status, 201);
+  const order = await createQris(confirmed.data.order.id, buyerCookie);
+  assert.equal(order.response.status, 200);
   assert.match(order.data.order.qrisImage, /^data:image\/png;base64,/);
   assert.equal(order.data.order.paymentStatus, 'pending');
   const generate = midtransRequests.find((entry) => entry.method === 'POST' && entry.path === '/v2/charge');
@@ -409,6 +424,8 @@ test('admin-managed stock reserves pending orders and decreases after Midtrans c
     method: 'POST', cookie: buyerCookie, body: { items: [{ id: product.id, quantity: 3 }] },
   });
   assert.equal(order.response.status, 201);
+  const qris = await createQris(order.data.order.id, buyerCookie);
+  assert.equal(qris.response.status, 200);
   const reserved = await request('/api/products');
   assert.equal(reserved.data.products.find((entry) => entry.id === product.id).stockAvailable, 2);
   const adminReserved = await request('/api/admin/products', { cookie: adminCookie });
@@ -446,6 +463,8 @@ test('verified paid bulk order permanently unlocks only its product reseller pri
     method: 'POST', cookie: buyerCookie, body: { items: [{ id: 'bulk-item', quantity: 3 }] },
   });
   assert.equal(pendingOrder.response.status, 201);
+  const qris = await createQris(pendingOrder.data.order.id, buyerCookie);
+  assert.equal(qris.response.status, 200);
   assert.equal(pendingOrder.data.order.total, 30000);
   assert.equal(pendingOrder.data.order.paymentStatus, 'pending');
 
@@ -534,8 +553,10 @@ test('verified reseller plan unlocks every configured reseller price permanently
     method: 'POST', body: { name: 'Sari Dewi', email: 'plan@example.test', password: 'BuyerPass123!' },
   });
   const buyerCookie = cookieFrom(user.response);
-  const order = await request('/api/orders', { method: 'POST', cookie: buyerCookie, body: { kind: 'reseller-plan' } });
-  assert.equal(order.response.status, 201);
+  const confirmed = await request('/api/orders', { method: 'POST', cookie: buyerCookie, body: { kind: 'reseller-plan' } });
+  assert.equal(confirmed.response.status, 201);
+  const order = await createQris(confirmed.data.order.id, buyerCookie);
+  assert.equal(order.response.status, 200);
   assert.equal(order.data.order.total, 149000);
   assert.equal(order.data.order.kind, 'reseller-plan');
 
