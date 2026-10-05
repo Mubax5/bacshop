@@ -24,6 +24,8 @@ Checkout tetap tertutup sampai server memiliki Server Key. Salin `.env.example` 
 - `MIDTRANS_MERCHANT_ID` — opsional, untuk mencocokkan identitas merchant pada respons pembayaran.
 - `MIDTRANS_IS_PRODUCTION` — set `true` untuk production; tanpa ini server memakai sandbox.
 
+Kunci dan mode Production hanya dapat dipakai saat `NODE_ENV=production` dengan origin HTTPS dan lokasi penyimpanan production yang terkonfigurasi. Jangan taruh Server Key Production di `.env` development; pakai kredensial Sandbox untuk preview lokal.
+
 Untuk sandbox, isi `.env` seperti ini lalu mulai ulang server:
 
 ```dotenv
@@ -76,7 +78,7 @@ Setelah konfigurasi benar, jalankan `npm start`. Startup production gagal dengan
 
 Sebelum menerima pembeli, jalankan `npm test`, lalu cek login admin, pendaftaran buyer, pesanan, QRIS, callback, dan pemenuhan. QRIS dibuat setelah pesanan dikonfirmasi; status lunas hanya berubah setelah respons status/callback Midtrans cocok pada ID merchant, mata uang, nominal, metode QRIS, dan fraud status.
 
-Core API Production dan QRIS dinamis harus aktif pada akun merchant Production. Sandbox aktif secara default, tetapi Core API Production perlu diminta aktivasinya. Jika provider mengembalikan `402 Payment channel is not activated`, jangan membuka penjualan live sebelum Midtrans mengonfirmasi aktivasi dan satu transaksi uji Production berhasil.
+Core API Production dan QRIS dinamis harus aktif pada akun merchant Production. Sandbox aktif secara default, tetapi [Core API Production perlu diminta aktivasinya](https://docs.midtrans.com/docs/custom-interface-core-api), dan status kanal QRIS dikelola pada [dashboard Production Midtrans](https://docs.midtrans.com/docs/payment-methods). Sebelum go-live, ikuti [panduan Production Midtrans](https://docs.midtrans.com/docs/how-do-i-migrate-my-account-from-sandbox-to-production): kirim dan bayar transaksi nyata minimal Rp10.000, lalu pastikan callback pembayaran berhasil diterima. Jika provider mengembalikan `402 Payment channel is not activated`, jangan membuka penjualan live sebelum aktivasi dan transaksi uji berhasil.
 
 Konten penjualan tidak mengarang ulasan, jumlah penjualan, atau pesanan. Informasi yang belum dikonfigurasi ditampilkan sebagai belum tersedia, bukan sebagai transaksi nyata.
 

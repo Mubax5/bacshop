@@ -58,6 +58,15 @@ test('checkout reviews products and creates QRIS after confirmation without paym
   assert.match(app, /data-create-qris/);
 });
 
+test('customers can see and refresh a pending Midtrans refund', () => {
+  const orderUi = between('function orderStatusText(', 'function renderCheckoutPage(');
+  assert.match(orderUi, /refundStatus === 'requested'\) return 'Refund diproses'/);
+  assert.match(orderUi, /data-refresh-order>Periksa refund/);
+  assert.match(orderUi, /data-payment-poll="\$\{shouldPollStatus \? 'true' : 'false'\}"/);
+  assert.match(app, /result\.order\?\.refundStatus !== 'requested'/);
+  assert.match(orderUi, /function orderStatusClass\(order\)/);
+});
+
 test('admin pages are grouped by catalog, store content, and sales', () => {
   const navigation = between('function adminNavigation(', 'function adminOrderCard(');
   assert.match(navigation, /'Produk', 'grid'/);

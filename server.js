@@ -66,6 +66,22 @@ const MIME = {
   '.png': 'image/png', '.jpg': 'image/jpeg', '.webp': 'image/webp',
 };
 
+function validateProductionConfiguration() {
+  if (NODE_ENV !== 'production') {
+    if (NODE_ENV !== 'test' && process.env.MIDTRANS_IS_PRODUCTION === 'true') {
+      throw new Error('Kunci pembayaran Production hanya boleh digunakan saat NODE_ENV=production.');
+    }
+    return;
+  }
+  if (!process.env.BACSHOP_PUBLIC_ORIGIN) throw new Error('Atur BACSHOP_PUBLIC_ORIGIN ke domain HTTPS Bacshop.');
+  for (const name of ['BACSHOP_DATA_DIR', 'BACSHOP_PRODUCTS_FILE', 'BACSHOP_UPLOADS_DIR']) {
+    if (!process.env[name] || !path.isAbsolute(process.env[name])) throw new Error(`${name} wajib menunjuk lokasi persistent yang absolut di production.`);
+  }
+  if (process.env.MIDTRANS_IS_PRODUCTION !== 'true' || !midtransConfig()) throw new Error('Production wajib memakai MIDTRANS_SERVER_KEY Production dan MIDTRANS_IS_PRODUCTION=true.');
+}
+
+validateProductionConfiguration();
+
 fs.mkdirSync(PRIVATE_DIR, { recursive: true, mode: 0o700 });
 fs.mkdirSync(path.dirname(PRODUCTS_FILE), { recursive: true });
 fs.mkdirSync(UPLOAD_DIR, { recursive: true });
@@ -184,17 +200,6 @@ function midtransConfig() {
   } catch { return null; }
   return config;
 }
-
-function validateProductionConfiguration() {
-  if (NODE_ENV !== 'production') return;
-  if (!process.env.BACSHOP_PUBLIC_ORIGIN) throw new Error('Atur BACSHOP_PUBLIC_ORIGIN ke domain HTTPS Bacshop.');
-  for (const name of ['BACSHOP_DATA_DIR', 'BACSHOP_PRODUCTS_FILE', 'BACSHOP_UPLOADS_DIR']) {
-    if (!process.env[name] || !path.isAbsolute(process.env[name])) throw new Error(`${name} wajib menunjuk lokasi persistent yang absolut di production.`);
-  }
-  if (process.env.MIDTRANS_IS_PRODUCTION !== 'true' || !midtransConfig()) throw new Error('Production wajib memakai MIDTRANS_SERVER_KEY Production dan MIDTRANS_IS_PRODUCTION=true.');
-}
-
-validateProductionConfiguration();
 
 function midtransAuthorization(config) {
   return `Basic ${Buffer.from(`${config.serverKey}:`).toString('base64')}`;

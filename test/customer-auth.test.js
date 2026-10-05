@@ -180,6 +180,122 @@ after(async () => {
   if (midtransServer) await new Promise((resolve) => midtransServer.close(resolve));
 });
 
+test('production payment credentials are rejected before a development server touches storage', async () => {
+  const dataDirectory = path.join(tempDirectory, 'production-mode-rejected');
+  const port = await freePort();
+  const child = spawn(process.execPath, ['server.js'], {
+    cwd: root,
+    env: {
+      ...process.env,
+      NODE_ENV: 'development',
+      PORT: String(port),
+      MIDTRANS_IS_PRODUCTION: 'true',
+      MIDTRANS_SERVER_KEY: 'Mid-server-test-placeholder',
+      BACSHOP_DATA_DIR: dataDirectory,
+      BACSHOP_PRODUCTS_FILE: path.join(root, 'data', 'products.json'),
+      BACSHOP_UPLOADS_DIR: path.join(tempDirectory, 'production-mode-rejected-uploads'),
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  let output = '';
+  child.stdout.on('data', (chunk) => { output += chunk.toString(); });
+  child.stderr.on('data', (chunk) => { output += chunk.toString(); });
+  const exitPromise = once(child, 'exit');
+  const exited = await Promise.race([
+    exitPromise.then((result) => result),
+    new Promise((resolve) => setTimeout(() => resolve(null), 3000)),
+  ]);
+  if (!exited) {
+    child.kill('SIGTERM');
+    await exitPromise;
+  }
+  assert.ok(exited, 'the development server must stop before opening a listener');
+  assert.notEqual(exited[0], 0);
+  assert.match(output, /Kunci pembayaran Production hanya boleh digunakan saat NODE_ENV=production/);
+  assert.doesNotMatch(output, /Mid-server-test-placeholder/);
+  await assert.rejects(fs.access(dataDirectory), { code: 'ENOENT' });
+});
+
+test('production configuration starts with HTTPS origin, secure admin setup, and no setup-code logging', async () => {
+  const productionRoot = path.join(tempDirectory, 'production-smoke');
+  const dataDirectory = path.join(productionRoot, 'private');
+  const productFile = path.join(productionRoot, 'catalog', 'products.json');
+  const uploadDirectory = path.join(productionRoot, 'uploads');
+  await fs.mkdir(path.dirname(productFile), { recursive: true });
+  await fs.copyFile(path.join(root, 'data', 'products.json'), productFile);
+  const port = await freePort();
+  const productionOrigin = 'https://bacshop.example';
+  const setupCode = 'production-smoke-test-only-setup-code-123456';
+  const child = spawn(process.execPath, ['server.js'], {
+    cwd: root,
+    env: {
+      ...process.env,
+      NODE_ENV: 'production',
+      HOST: '127.0.0.1',
+      PORT: String(port),
+      BACSHOP_PUBLIC_ORIGIN: productionOrigin,
+      BACSHOP_DATA_DIR: dataDirectory,
+      BACSHOP_PRODUCTS_FILE: productFile,
+      BACSHOP_UPLOADS_DIR: uploadDirectory,
+      BACSHOP_ADMIN_SETUP_CODE: setupCode,
+      MIDTRANS_IS_PRODUCTION: 'true',
+      MIDTRANS_SERVER_KEY: 'Mid-server-test-placeholder',
+      MIDTRANS_MERCHANT_ID: 'merchant-test',
+      MIDTRANS_API_BASE_URL: '',
+      BACSHOP_TRUSTED_PROXY_IPS: '',
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  let output = '';
+  let started = false;
+  child.stdout.on('data', (chunk) => { output += chunk.toString(); });
+  child.stderr.on('data', (chunk) => { output += chunk.toString(); });
+  const startPromise = new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`Production smoke server startup timed out: ${output}`)), 5000);
+    child.stdout.on('data', (chunk) => {
+      if (!output.includes('Bacshop berjalan')) return;
+      started = true;
+      clearTimeout(timer);
+      resolve();
+    });
+    child.once('error', (error) => { clearTimeout(timer); reject(error); });
+    child.once('exit', (code) => {
+      if (!started) {
+        clearTimeout(timer);
+        reject(new Error(`Production smoke server exited (${code}): ${output}`));
+      }
+    });
+  });
+
+  try {
+    await startPromise;
+    const base = `http://127.0.0.1:${port}`;
+    const health = await fetch(`${base}/api/health`);
+    assert.equal(health.status, 200);
+    assert.deepEqual(await health.json(), { status: 'ok', paymentConfigured: true });
+    assert.equal(health.headers.get('strict-transport-security'), 'max-age=15552000');
+
+    const setup = await fetch(`${base}/api/admin/setup`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', origin: productionOrigin },
+      body: JSON.stringify({ code: setupCode, email: 'production-admin@example.test', password: 'StrongProductionPass123!' }),
+    });
+    assert.equal(setup.status, 201);
+    const cookie = setup.headers.get('set-cookie');
+    assert.match(cookie, /; Secure(?:;|$)/);
+    assert.match(cookie, /HttpOnly/);
+    const session = await fetch(`${base}/api/admin/session`, { headers: { cookie: cookie.split(';')[0] } });
+    assert.equal(session.status, 200);
+    assert.equal((await session.json()).authenticated, true);
+    assert.doesNotMatch(output, new RegExp(setupCode));
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) {
+      child.kill('SIGINT');
+      await once(child, 'exit');
+    }
+  }
+});
+
 test('checkout confirms the order before creating a dynamic QRIS on the payment step', async () => {
   midtransRequests = [];
   const registration = await request('/api/auth/register', {

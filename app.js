@@ -591,7 +591,7 @@
       try {
         const result = await requestApi(`/api/orders/${encodeURIComponent(orderId)}/check-payment`, { method: 'POST', body: {} });
         if (window.location.hash !== orderRoute) return;
-        if (result.order?.paymentStatus !== 'pending') {
+        if (result.order?.paymentStatus !== 'pending' && result.order?.refundStatus !== 'requested') {
           await render();
           return;
         }
@@ -716,14 +716,26 @@
   function orderStatusText(order) {
     if (order.paymentStatus === 'cancelled') return 'Belum terkonfirmasi';
     if (order.paymentStatus === 'refunded') return 'Dana dikembalikan';
+    if (order.paymentStatus === 'paid' && order.refundStatus === 'requested') return 'Refund diproses';
     if (order.paymentStatus === 'paid' && order.fulfillmentStatus === 'fulfilled') return 'Selesai';
     if (order.paymentStatus === 'paid') return 'Pembayaran terverifikasi';
     if (order.paymentInitialized === false) return 'Pesanan dikonfirmasi';
     return 'Menunggu pembayaran';
   }
 
+  function orderStatusClass(order) {
+    if (order.paymentStatus === 'refunded') return 'status-danger';
+    if (order.refundStatus === 'requested') return 'status-warning';
+    return order.paymentStatus === 'paid' ? 'status-success' : 'status-warning';
+  }
+
   function renderOrdersPage(orders) {
-    const entries = orders.map((order) => `<a class="order-card" href="#/pesanan/${encodeURIComponent(order.id)}"><span class="order-card-top"><strong>${escapeHtml(order.id)}</strong><span class="status-pill ${order.paymentStatus === 'paid' ? 'status-success' : order.paymentStatus === 'refunded' ? 'status-danger' : 'status-warning'}">${orderStatusText(order)}</span></span><span class="order-card-items">${order.kind === 'reseller-plan' ? 'Paket reseller' : order.items.map((item) => `${escapeHtml(item.name)} × ${item.quantity}${(item.specifications || []).length ? ' · ' + item.specifications.map((specification) => escapeHtml(specification.name) + ': ' + escapeHtml(specification.label)).join(', ') : ''}`).join(', ')}</span><span class="order-card-bottom"><span>${new Date(order.createdAt).toLocaleString('id-ID')}</span><strong>${rupiah(order.total)}</strong></span></a>`).join('');
+    const entries = orders.map((order) => {
+      const items = order.kind === 'reseller-plan'
+        ? 'Paket reseller'
+        : order.items.map((item) => `${escapeHtml(item.name)} × ${item.quantity}${(item.specifications || []).length ? ' · ' + item.specifications.map((specification) => escapeHtml(specification.name) + ': ' + escapeHtml(specification.label)).join(', ') : ''}`).join(', ');
+      return `<a class="order-card" href="#/pesanan/${encodeURIComponent(order.id)}"><span class="order-card-top"><strong>${escapeHtml(order.id)}</strong><span class="status-pill ${orderStatusClass(order)}">${orderStatusText(order)}</span></span><span class="order-card-items">${items}</span><span class="order-card-bottom"><span>${new Date(order.createdAt).toLocaleString('id-ID')}</span><strong>${rupiah(order.total)}</strong></span></a>`;
+    }).join('');
     return `<nav class="breadcrumbs" aria-label="Breadcrumb"><a href="#/">Beranda</a><span aria-hidden="true">›</span><span>Pesanan</span></nav><section class="page-panel orders-page"><div class="page-heading"><h1>Pesanan</h1><p>Pantau pembayaran dan pemenuhan secara terpisah.</p></div>${entries ? `<div class="orders-list">${entries}</div>` : `<div class="empty-state"><h2>Belum ada pesanan</h2><p>Pesanan yang kamu buat akan tercatat di sini.</p><a class="button button-primary" href="#/kategori/semua">Mulai belanja</a></div>`}</section>`;
   }
 
@@ -731,14 +743,18 @@
     const isPlan = order.kind === 'reseller-plan';
     const isPaid = order.paymentStatus === 'paid';
     const isRefunded = order.paymentStatus === 'refunded';
+    const isRefundPending = isPaid && order.refundStatus === 'requested';
     const hasQr = Boolean(order.qrisImage);
     const canCheckPayment = !isPaid && !isRefunded && hasQr;
+    const canCheckRefund = isRefundPending;
     const details = isPlan ? '<li><span>Akses</span><strong>Harga reseller seluruh katalog · permanen</strong></li>' : order.items.map((item) => {
       const selections = (item.specifications || []).map((specification) => escapeHtml(specification.name) + ': ' + escapeHtml(specification.label)).join(' · ');
       return `<li><span>${escapeHtml(item.name)} × ${item.quantity}${selections ? `<small class="order-specification-copy">${selections}</small>` : ''}</span><strong>${rupiah(item.lineTotal)}</strong></li>`;
     }).join('');
     const qr = canCheckPayment ? `<div class="qris-frame"><img src="${escapeHtml(order.qrisImage)}" alt="QRIS untuk pesanan ${escapeHtml(order.id)}" /></div>` : '';
-    const paymentMessage = isPaid
+    const paymentMessage = isRefundPending
+      ? '<p class="payment-pending-copy" role="status">Permintaan pengembalian dana sedang diproses. Status pesanan akan diperbarui otomatis.</p>'
+      : isPaid
       ? '<p class="payment-success-copy" role="status">Pembayaran berhasil dikonfirmasi.</p>'
       : isRefunded
         ? '<p class="payment-pending-copy" role="status">Dana pesanan ini sudah dikembalikan.</p>'
@@ -746,15 +762,19 @@
           ? '<p class="payment-pending-copy" role="status">Pembayaran belum terkonfirmasi. Status akan diperiksa otomatis.</p>'
         : '<p class="payment-success-copy" role="status">Pesanan sudah tersimpan. QRIS khusus pesanan ini siap dibuat saat kamu melanjutkan pembayaran.</p>';
     const expires = order.paymentExpiresAt ? `<p class="qris-expiration">Berlaku sampai ${escapeHtml(new Date(order.paymentExpiresAt).toLocaleString('id-ID'))}</p>` : '';
-    const detailStatus = isPaid ? 'Pembayaran terverifikasi' : isRefunded ? 'Dana dikembalikan' : order.paymentInitialized === false ? 'Pesanan dikonfirmasi' : 'Menunggu pembayaran';
-    const detailStatusClass = isPaid ? 'status-success' : 'status-warning';
+    const detailStatus = isRefunded ? 'Dana dikembalikan' : isRefundPending ? 'Refund diproses' : isPaid ? 'Pembayaran terverifikasi' : order.paymentInitialized === false ? 'Pesanan dikonfirmasi' : 'Menunggu pembayaran';
+    const detailStatusClass = isRefunded ? 'status-danger' : isRefundPending ? 'status-warning' : isPaid ? 'status-success' : 'status-warning';
     const paymentAction = !isPaid && !isRefunded && !hasQr && order.paymentStatus === 'pending'
       ? '<button class="button button-primary" type="button" data-create-qris>Buat QRIS &amp; lanjut bayar</button><p class="checkout-error" data-qris-error role="status" aria-live="polite" hidden></p>'
       : '';
     const editHref = checkoutItemsOverride?.length === 1
       ? `#/produk/${encodeURIComponent(PRODUCTS.find((product) => product.id === checkoutItemsOverride[0].id)?.slug || '')}`
       : '#/keranjang';
-    return `<nav class="breadcrumbs" aria-label="Breadcrumb"><a href="#/">Beranda</a><span aria-hidden="true">›</span><a href="#/pesanan">Pesanan</a><span aria-hidden="true">›</span><span>${escapeHtml(order.id)}</span></nav><section class="page-panel order-detail-page"><div class="order-detail-heading"><div><span class="product-category">${escapeHtml(order.id)}</span><h1>${order.kind === 'reseller-plan' ? 'Detail paket reseller' : 'Pesanan dikonfirmasi'}</h1><p>${new Date(order.createdAt).toLocaleString('id-ID')}</p></div><span class="status-pill ${detailStatusClass}">${detailStatus}</span></div>${checkoutStepsMarkup(3, isPaid)}<div class="order-detail-grid"><div><section class="order-detail-card"><h2>Rincian</h2><ul class="term-list">${details}</ul><div class="summary-total"><span>Total pesanan</span><strong>${rupiah(order.total)}</strong></div></section><section class="order-detail-card"><h2>Langkah berikutnya</h2><p>${isPaid ? 'Pembayaran sudah terverifikasi. Pesanan akan diproses sesuai keterangan produk.' : hasQr ? 'Selesaikan pembayaran dengan QRIS di samping.' : 'Buat QRIS dinamis untuk pesanan ini, lalu bayar sesuai nominal yang tertera.'}</p></section></div><aside class="order-payment-card ${isPaid ? 'is-paid' : ''}" data-payment-order="${escapeHtml(order.id)}" data-payment-poll="${order.paymentStatus === 'pending' && hasQr ? 'true' : 'false'}"><h2>${isPaid ? 'Pembayaran berhasil' : isRefunded ? 'Status pesanan' : hasQr ? 'Bayar dengan QRIS' : 'Pembayaran'}</h2>${qr}${expires}${paymentMessage}<strong class="payment-amount">${rupiah(order.total)}</strong>${paymentAction}${canCheckPayment ? '<button class="button button-primary" type="button" data-refresh-order>Periksa pembayaran</button>' : ''}${isPlan ? `<details class="order-terms"><summary>Syarat paket reseller</summary><p>${escapeHtml(order.resellerTerms || '')}</p></details>` : ''}</aside></div><a class="text-link" href="#/pesanan">Kembali ke pesanan</a></section>`;
+    const shouldPollStatus = order.paymentStatus === 'pending' && hasQr || isRefundPending;
+    const checkStatusButton = canCheckRefund
+      ? '<button class="button button-primary" type="button" data-refresh-order>Periksa refund</button>'
+      : canCheckPayment ? '<button class="button button-primary" type="button" data-refresh-order>Periksa pembayaran</button>' : '';
+    return `<nav class="breadcrumbs" aria-label="Breadcrumb"><a href="#/">Beranda</a><span aria-hidden="true">›</span><a href="#/pesanan">Pesanan</a><span aria-hidden="true">›</span><span>${escapeHtml(order.id)}</span></nav><section class="page-panel order-detail-page"><div class="order-detail-heading"><div><span class="product-category">${escapeHtml(order.id)}</span><h1>${order.kind === 'reseller-plan' ? 'Detail paket reseller' : 'Pesanan dikonfirmasi'}</h1><p>${new Date(order.createdAt).toLocaleString('id-ID')}</p></div><span class="status-pill ${detailStatusClass}">${detailStatus}</span></div>${checkoutStepsMarkup(3, isPaid)}<div class="order-detail-grid"><div><section class="order-detail-card"><h2>Rincian</h2><ul class="term-list">${details}</ul><div class="summary-total"><span>Total pesanan</span><strong>${rupiah(order.total)}</strong></div></section><section class="order-detail-card"><h2>Langkah berikutnya</h2><p>${isRefundPending ? 'Pengembalian dana penuh sedang diproses.' : isPaid ? 'Pembayaran sudah terverifikasi. Pesanan akan diproses sesuai keterangan produk.' : hasQr ? 'Selesaikan pembayaran dengan QRIS di samping.' : 'Buat QRIS dinamis untuk pesanan ini, lalu bayar sesuai nominal yang tertera.'}</p></section></div><aside class="order-payment-card ${isPaid && !isRefundPending ? 'is-paid' : ''}" data-payment-order="${escapeHtml(order.id)}" data-payment-poll="${shouldPollStatus ? 'true' : 'false'}"><h2>${isRefundPending ? 'Refund berjalan' : isPaid ? 'Pembayaran berhasil' : isRefunded ? 'Status pesanan' : hasQr ? 'Bayar dengan QRIS' : 'Pembayaran'}</h2>${qr}${expires}${paymentMessage}<strong class="payment-amount">${rupiah(order.total)}</strong>${paymentAction}${checkStatusButton}${isPlan ? `<details class="order-terms"><summary>Syarat paket reseller</summary><p>${escapeHtml(order.resellerTerms || '')}</p></details>` : ''}</aside></div><a class="text-link" href="#/pesanan">Kembali ke pesanan</a></section>`;
   }
 
   function renderCheckoutPage() {
