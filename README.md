@@ -54,6 +54,22 @@ Daftarkan callback HTTPS publik `https://<domain>/api/payments/notify` pada dash
 
 Production harus memakai satu proses Node.js pada satu server dengan penyimpanan disk yang persisten. Data akun, pesanan, audit, produk, dan unggahan disimpan sebagai file; jangan menjalankan beberapa replika Bacshop yang menulis folder data yang sama. Pasang TLS pada reverse proxy publik dan teruskan trafik ke Node di `127.0.0.1:4173`. Origin browser yang dikonfigurasi harus sama persis dengan domain publik HTTPS.
 
+### Deploy ke satu VPS Linux dengan Docker
+
+Repo menyediakan `Dockerfile` dan Compose untuk menjalankan satu kontainer Bacshop di belakang Caddy. Caddy mengurus TLS otomatis; data Bacshop, sertifikat TLS, dan konfigurasi Caddy memakai volume persisten. DNS domain harus mengarah ke VPS, port TCP 80/443 dan UDP 443 harus dibuka, dan subnet Docker `10.245.17.0/24` harus tidak bertabrakan dengan jaringan VPS.
+
+Salin `deploy/production.env.example` menjadi `deploy/production.env` serta `deploy/caddy.env.example` menjadi `deploy/caddy.env`. Isi domain dan origin HTTPS yang sama, Server Key Production, Merchant ID, dan kode setup admin acak minimal 32 karakter. `deploy/production.env` memuat rahasia dan diabaikan Git; `deploy/caddy.env` hanya memuat nama domain.
+
+```sh
+cp deploy/production.env.example deploy/production.env
+cp deploy/caddy.env.example deploy/caddy.env
+chmod 600 deploy/production.env
+docker compose --env-file deploy/production.env config --quiet
+docker compose --env-file deploy/production.env up -d --build
+```
+
+Jika subnet `10.245.17.0/24` sudah dipakai, ganti `BACSHOP_DOCKER_SUBNET`, `BACSHOP_CADDY_IP`, dan `BACSHOP_TRUSTED_PROXY_IPS` di `deploy/production.env` dengan subnet kosong lain yang konsisten. Jangan publikasikan port Node `4173`; hanya Caddy yang menerima trafik internet. Jangan menghapus volume `bacshop_data` saat memperbarui aplikasi. Backup ketiga volume Compose secara terenkripsi dan berkala.
+
 Atur environment production berikut sebelum mulai:
 
 ```dotenv

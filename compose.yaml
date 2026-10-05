@@ -1,0 +1,57 @@
+services:
+  bacshop:
+    build: .
+    image: bacshop:production
+    restart: unless-stopped
+    env_file:
+      - ./deploy/production.env
+    volumes:
+      - bacshop_data:/var/lib/bacshop
+    expose:
+      - "4173"
+    networks:
+      - edge
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      bacshop:
+        condition: service_healthy
+    env_file:
+      - ./deploy/caddy.env
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      edge:
+        ipv4_address: ${BACSHOP_CADDY_IP:?Set BACSHOP_CADDY_IP in deploy/production.env}
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    security_opt:
+      - no-new-privileges:true
+
+networks:
+  edge:
+    ipam:
+      config:
+        - subnet: ${BACSHOP_DOCKER_SUBNET:?Set BACSHOP_DOCKER_SUBNET in deploy/production.env}
+
+volumes:
+  bacshop_data:
+  caddy_data:
+  caddy_config:

@@ -180,6 +180,13 @@ after(async () => {
   if (midtransServer) await new Promise((resolve) => midtransServer.close(resolve));
 });
 
+test('health endpoint is suitable for deployment probes and discloses no payment credentials', async () => {
+  const health = await request('/api/health');
+  assert.equal(health.response.status, 200);
+  assert.deepEqual(health.data, { status: 'ok', paymentConfigured: true });
+  assert.equal(JSON.stringify(health.data).includes('test-server-key'), false);
+});
+
 test('production payment credentials are rejected before a development server touches storage', async () => {
   const dataDirectory = path.join(tempDirectory, 'production-mode-rejected');
   const port = await freePort();

@@ -11,4 +11,6 @@ test-results/
 *.tsbuildinfo
 .bacshop-private/
 assets/uploads/
+deploy/production.env
+deploy/caddy.env
 *.tmp

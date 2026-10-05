@@ -10,6 +10,24 @@ permissions:
   contents: read
 
 jobs:
+  container:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+      - name: Build production image
+        run: docker build --pull -t bacshop:ci .
+      - name: Validate production Compose configuration
+        run: |
+          cp deploy/production.env.example deploy/production.env
+          cp deploy/caddy.env.example deploy/caddy.env
+          docker compose --env-file deploy/production.env config --quiet
+      - name: Validate Caddy configuration
+        run: |
+          docker run --rm --env-file deploy/caddy.env \
+            -v "$PWD/deploy/Caddyfile:/etc/caddy/Caddyfile:ro" \
+            caddy:2-alpine caddy validate --config /etc/caddy/Caddyfile
+
   verify:
     runs-on: ubuntu-latest
     strategy:

@@ -1,0 +1,11 @@
+.git
+.github
+.bacshop-private
+assets/uploads
+coverage
+deploy/production.env
+deploy/caddy.env
+node_modules
+test
+.env
+.env.*

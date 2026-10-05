@@ -1,0 +1,4 @@
+{$BACSHOP_DOMAIN} {
+	encode zstd gzip
+	reverse_proxy bacshop:4173
+}
