@@ -4,6 +4,7 @@ const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
+const net = require('node:net');
 const QRCode = require('qrcode');
 
 function loadEnvFile(file = path.join(__dirname, '.env')) {
@@ -29,8 +30,22 @@ function loadEnvFile(file = path.join(__dirname, '.env')) {
 loadEnvFile();
 
 const ROOT = __dirname;
+const NODE_ENV = process.env.NODE_ENV || 'development';
 const PORT = Number(process.env.PORT || 4173);
-const HOST = '127.0.0.1';
+const HOST = process.env.HOST || '127.0.0.1';
+if (!Number.isInteger(PORT) || PORT < 1 || PORT > 65535) throw new Error('PORT harus berupa angka antara 1 dan 65535.');
+const PUBLIC_ORIGIN = (() => {
+  const value = (process.env.BACSHOP_PUBLIC_ORIGIN || `http://${HOST}:${PORT}`).trim();
+  let origin;
+  try { origin = new URL(value); } catch { throw new Error('BACSHOP_PUBLIC_ORIGIN harus berupa origin URL yang valid.'); }
+  if (!['http:', 'https:'].includes(origin.protocol) || origin.username || origin.password || origin.pathname !== '/' || origin.search || origin.hash) {
+    throw new Error('BACSHOP_PUBLIC_ORIGIN harus berupa origin HTTP(S) tanpa path, query, atau kredensial.');
+  }
+  if (NODE_ENV === 'production' && origin.protocol !== 'https:') throw new Error('Bacshop production wajib memakai BACSHOP_PUBLIC_ORIGIN HTTPS.');
+  return origin.origin;
+})();
+const COOKIE_SECURE = NODE_ENV === 'production' || process.env.BACSHOP_COOKIE_SECURE === 'true';
+const TRUSTED_PROXY_IPS = new Set((process.env.BACSHOP_TRUSTED_PROXY_IPS || '').split(',').map((value) => value.trim()).filter((value) => net.isIP(value)));
 const PRIVATE_DIR = process.env.BACSHOP_DATA_DIR || path.join(ROOT, '.bacshop-private');
 const PRODUCTS_FILE = process.env.BACSHOP_PRODUCTS_FILE || path.join(ROOT, 'data', 'products.json');
 const ADMIN_FILE = path.join(PRIVATE_DIR, 'admin.json');
@@ -51,19 +66,23 @@ const MIME = {
   '.png': 'image/png', '.jpg': 'image/jpeg', '.webp': 'image/webp',
 };
 
-fs.mkdirSync(PRIVATE_DIR, { recursive: true });
+fs.mkdirSync(PRIVATE_DIR, { recursive: true, mode: 0o700 });
 fs.mkdirSync(path.dirname(PRODUCTS_FILE), { recursive: true });
 fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 if (!fs.existsSync(PRODUCTS_FILE)) throw new Error('Missing data/products.json');
+if (!Array.isArray(readJson(PRODUCTS_FILE, null))) throw new Error('Data produk harus berupa daftar JSON yang valid.');
 
 let adminRecord = readJson(ADMIN_FILE, null);
-let setupCode = adminRecord ? null : crypto.randomBytes(24).toString('base64url');
+let setupCode = adminRecord ? null : process.env.BACSHOP_ADMIN_SETUP_CODE || crypto.randomBytes(24).toString('base64url');
+if (NODE_ENV === 'production' && !adminRecord && !process.env.BACSHOP_ADMIN_SETUP_CODE) throw new Error('Atur BACSHOP_ADMIN_SETUP_CODE sebelum setup admin production.');
+if (NODE_ENV === 'production' && !adminRecord && setupCode.length < 32) throw new Error('BACSHOP_ADMIN_SETUP_CODE minimal 32 karakter saat setup admin production.');
 const sessions = new Map();
 const userSessions = new Map();
 const loginAttempts = new Map();
 const userLoginAttempts = new Map();
 const paymentCreationLocks = new Set();
-if (setupCode) {
+const paymentRefundLocks = new Set();
+if (setupCode && NODE_ENV !== 'production') {
   console.log('\nBacshop admin first setup');
   console.log(`Open http://${HOST}:${PORT}/#/admin and enter this one-time code:`);
   console.log(setupCode);
@@ -71,7 +90,16 @@ if (setupCode) {
 }
 
 function readJson(file, fallback) {
-  try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return fallback; }
+  let contents;
+  try { contents = fs.readFileSync(file, 'utf8'); } catch (error) {
+    if (error.code === 'ENOENT') return fallback;
+    if (NODE_ENV === 'production') throw new Error(`Data ${path.basename(file)} tidak dapat dibaca.`);
+    return fallback;
+  }
+  try { return JSON.parse(contents); } catch {
+    if (NODE_ENV === 'production') throw new Error(`Data ${path.basename(file)} tidak valid.`);
+    return fallback;
+  }
 }
 
 function readProducts() {
@@ -130,7 +158,7 @@ function json(res, status, body, extraHeaders = {}) {
   res.writeHead(status, {
     'Content-Type': 'application/json; charset=utf-8',
     'Cache-Control': 'no-store',
-    'X-Content-Type-Options': 'nosniff',
+    ...standardSecurityHeaders(),
     ...extraHeaders,
   });
   res.end(JSON.stringify(body));
@@ -157,6 +185,17 @@ function midtransConfig() {
   return config;
 }
 
+function validateProductionConfiguration() {
+  if (NODE_ENV !== 'production') return;
+  if (!process.env.BACSHOP_PUBLIC_ORIGIN) throw new Error('Atur BACSHOP_PUBLIC_ORIGIN ke domain HTTPS Bacshop.');
+  for (const name of ['BACSHOP_DATA_DIR', 'BACSHOP_PRODUCTS_FILE', 'BACSHOP_UPLOADS_DIR']) {
+    if (!process.env[name] || !path.isAbsolute(process.env[name])) throw new Error(`${name} wajib menunjuk lokasi persistent yang absolut di production.`);
+  }
+  if (process.env.MIDTRANS_IS_PRODUCTION !== 'true' || !midtransConfig()) throw new Error('Production wajib memakai MIDTRANS_SERVER_KEY Production dan MIDTRANS_IS_PRODUCTION=true.');
+}
+
+validateProductionConfiguration();
+
 function midtransAuthorization(config) {
   return `Basic ${Buffer.from(`${config.serverKey}:`).toString('base64')}`;
 }
@@ -177,21 +216,29 @@ async function midtransRequest(method, pathname, body, config = midtransConfig()
     const detail = error?.name === 'TimeoutError' || error?.name === 'AbortError'
       ? 'Koneksi pembayaran melewati batas waktu. Coba buat QRIS lagi.'
       : 'Server tidak dapat terhubung ke Midtrans. Periksa koneksi lalu coba lagi.';
-    throw Object.assign(new Error(detail), { status: 502 });
+    throw Object.assign(new Error(detail), { status: 502, transportFailure: true });
   }
   let result;
-  try { result = await response.json(); } catch { throw Object.assign(new Error('Respons pembayaran tidak dapat dibaca.'), { status: 502 }); }
+  try { result = await response.json(); } catch { throw Object.assign(new Error('Respons pembayaran tidak dapat dibaca.'), { status: 502, providerHttpStatus: response.status }); }
   if (result && typeof result === 'object') Object.defineProperty(result, MIDTRANS_HTTP_STATUS, { value: response.status });
   if (!response.ok) {
-    console.error('Payment API rejected request:', JSON.stringify({ httpStatus: response.status, code: result.status_code || 'unknown', message: result.status_message || '' }));
+    console.error('Payment API rejected request:', JSON.stringify({ httpStatus: response.status, code: result.status_code || 'unknown' }));
+    const inactiveChannel = /payment channel is not activated/i.test(String(result.status_message || ''));
     const detail = response.status === 401
       ? 'Koneksi QRIS ditolak. Periksa kecocokan Server Key dan mode akun Midtrans di server.'
-      : response.status === 402
+      : inactiveChannel
         ? 'Kanal QRIS dinamis belum diaktifkan untuk Core API akun Midtrans ini. Minta aktivasi QRIS dinamis untuk mode akun yang sedang dipakai.'
       : response.status === 400
         ? 'Midtrans menolak pesanan. Pastikan kanal QRIS aktif dan nominal pesanan memenuhi ketentuan akun.'
         : 'QRIS belum dapat diproses. Coba lagi beberapa saat.';
-    throw Object.assign(new Error(detail), { status: 502, providerRejected: true });
+    throw Object.assign(new Error(detail), {
+      status: 502,
+      providerRejected: true,
+      providerHttpStatus: response.status,
+      providerCode: String(result.status_code || ''),
+      providerMessage: String(result.status_message || ''),
+      paymentChannelInactive: inactiveChannel,
+    });
   }
   return result;
 }
@@ -255,10 +302,10 @@ async function handleMidtransNotify(req, res) {
   const order = readOrders().find((entry) => entry.id === body.order_id && entry.paymentProvider === 'qris_dynamic');
   const amount = Number(body.gross_amount);
   const expectedMerchantId = order?.midtransMerchantId || config.merchantId;
-  if (!order || body.currency && body.currency !== 'IDR' || !Number.isFinite(amount) || amount !== Number(order.total) || expectedMerchantId && body.merchant_id && body.merchant_id !== expectedMerchantId) {
+  if (!order || body.currency !== 'IDR' || body.payment_type !== 'qris' || typeof body.merchant_id !== 'string' || !body.merchant_id || !Number.isFinite(amount) || amount !== Number(order.total) || expectedMerchantId && body.merchant_id !== expectedMerchantId) {
     return json(res, 404, { error: 'Payment transaction does not match an order.' });
   }
-  if (body.status_code === '200' && ['settlement', 'capture'].includes(body.transaction_status) && (!body.fraud_status || body.fraud_status === 'accept')) {
+  if (body.status_code === '200' && body.transaction_status === 'settlement' && body.fraud_status === 'accept') {
     const result = savePaidOrder(order, 'QRIS otomatis', body.transaction_id || body.order_id);
     if (result.error) return json(res, 409, { error: 'Order status cannot be updated.' });
   } else if (['expire', 'cancel', 'deny'].includes(body.transaction_status) && order.paymentStatus === 'pending') {
@@ -266,6 +313,9 @@ async function handleMidtransNotify(req, res) {
     const index = orders.findIndex((entry) => entry.id === order.id);
     orders[index] = { ...orders[index], paymentStatus: 'cancelled', status: 'cancelled', cancelledAt: new Date().toISOString() };
     saveOrders(orders);
+  } else if (body.transaction_status === 'refund' && order.paymentStatus === 'paid') {
+    if (refundIsConfirmed(body, order)) saveConfirmedRefund(order, body);
+    else saveRefundRequest(order, order.refundKey || `BCREFUND-${order.id}`, order.refundReason || 'Refund diproses melalui Midtrans.', 'requested', 'Midtrans');
   }
   return json(res, 200, { status: 'ok' });
 }
@@ -305,35 +355,55 @@ function activeUser(req) {
 function setSession(res, email) {
   const token = crypto.randomBytes(32).toString('base64url');
   sessions.set(token, { email, expires: Date.now() + SESSION_MS });
-  res.setHeader('Set-Cookie', `${COOKIE}=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${SESSION_MS / 1000}`);
+  res.setHeader('Set-Cookie', `${COOKIE}=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${SESSION_MS / 1000}${COOKIE_SECURE ? '; Secure' : ''}`);
 }
 
 function setUserSession(res, userId) {
   const token = crypto.randomBytes(32).toString('base64url');
   userSessions.set(token, { userId, expires: Date.now() + SESSION_MS });
-  res.setHeader('Set-Cookie', `${USER_COOKIE}=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${SESSION_MS / 1000}`);
+  res.setHeader('Set-Cookie', `${USER_COOKIE}=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${SESSION_MS / 1000}${COOKIE_SECURE ? '; Secure' : ''}`);
 }
 
 function clearSession(req, res) {
   const token = cookieValue(req);
   if (token) sessions.delete(token);
-  res.setHeader('Set-Cookie', `${COOKIE}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0`);
+  res.setHeader('Set-Cookie', `${COOKIE}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0${COOKIE_SECURE ? '; Secure' : ''}`);
 }
 
 function clearUserSession(req, res) {
   const token = userCookieValue(req);
   if (token) userSessions.delete(token);
-  res.setHeader('Set-Cookie', `${USER_COOKIE}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0`);
+  res.setHeader('Set-Cookie', `${USER_COOKIE}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0${COOKIE_SECURE ? '; Secure' : ''}`);
 }
 
-function localRequest(req) {
-  const address = req.socket.remoteAddress || '';
-  return address === '127.0.0.1' || address === '::1' || address === '::ffff:127.0.0.1';
+function normalizeAddress(address) {
+  if (typeof address !== 'string') return '';
+  return address.startsWith('::ffff:') ? address.slice('::ffff:'.length) : address;
+}
+
+function clientAddress(req) {
+  const remoteAddress = normalizeAddress(req.socket.remoteAddress || '');
+  if (TRUSTED_PROXY_IPS.has(remoteAddress)) {
+    const forwarded = req.headers['x-forwarded-for'];
+    const candidate = typeof forwarded === 'string' ? normalizeAddress(forwarded.split(',')[0].trim()) : '';
+    if (net.isIP(candidate)) return candidate;
+  }
+  return remoteAddress || 'unknown';
 }
 
 function sameOrigin(req) {
-  const origin = req.headers.origin;
-  return origin === `http://${HOST}:${PORT}`;
+  return typeof req.headers.origin === 'string' && req.headers.origin === PUBLIC_ORIGIN;
+}
+
+function standardSecurityHeaders() {
+  const headers = {
+    'X-Content-Type-Options': 'nosniff',
+    'X-Frame-Options': 'DENY',
+    'Referrer-Policy': 'strict-origin-when-cross-origin',
+    'Permissions-Policy': 'camera=(), microphone=(), geolocation=()',
+  };
+  if (PUBLIC_ORIGIN.startsWith('https://')) headers['Strict-Transport-Security'] = 'max-age=15552000';
+  return headers;
 }
 
 function readBody(req, limit = 65536) {
@@ -381,7 +451,7 @@ function validEmail(value) {
 }
 
 function publicOrder(order) {
-  const { paymentQrString, paymentQrActions, ...visible } = order;
+  const { paymentQrString, paymentQrActions, refundKey, refundReason, refundProviderReference, ...visible } = order;
   return visible;
 }
 
@@ -495,7 +565,7 @@ function validateProduct(input, id, products) {
 }
 
 function loginLimited(req) {
-  const key = req.socket.remoteAddress || 'local';
+  const key = clientAddress(req);
   const now = Date.now();
   const record = loginAttempts.get(key) || { count: 0, resetAt: now + 15 * 60 * 1000 };
   if (record.resetAt <= now) {
@@ -506,7 +576,7 @@ function loginLimited(req) {
 }
 
 function recordLoginFailure(req) {
-  const key = req.socket.remoteAddress || 'local';
+  const key = clientAddress(req);
   const now = Date.now();
   const record = loginAttempts.get(key) || { count: 0, resetAt: now + 15 * 60 * 1000 };
   if (record.resetAt <= now) {
@@ -518,7 +588,7 @@ function recordLoginFailure(req) {
 }
 
 function failedLogin(req, attempts) {
-  const key = req.socket.remoteAddress || 'local';
+  const key = clientAddress(req);
   const now = Date.now();
   const record = attempts.get(key) || { count: 0, resetAt: now + 15 * 60 * 1000 };
   if (record.resetAt <= now) attempts.set(key, { count: 1, resetAt: now + 15 * 60 * 1000 });
@@ -526,7 +596,7 @@ function failedLogin(req, attempts) {
 }
 
 function limitedLogin(req, attempts) {
-  const key = req.socket.remoteAddress || 'local';
+  const key = clientAddress(req);
   const now = Date.now();
   const record = attempts.get(key);
   if (!record || record.resetAt <= now) return false;
@@ -654,13 +724,65 @@ function syncResellerAccess(order, orders) {
   saveUsers(users);
 }
 
-function matchingMidtransPayment(order, payment) {
+function matchingMidtransPayment(order, payment, config = midtransConfig()) {
   const amount = Number(payment?.gross_amount);
-  const merchantId = order.midtransMerchantId || midtransConfig()?.merchantId;
+  const merchantId = order.midtransMerchantId || config?.merchantId;
   return payment?.order_id === order.id
-    && (!merchantId || !payment?.merchant_id || payment.merchant_id === merchantId)
-    && (!payment?.currency || payment.currency === 'IDR')
+    && typeof payment?.merchant_id === 'string' && payment.merchant_id.length > 0
+    && (!merchantId || payment.merchant_id === merchantId)
+    && payment?.currency === 'IDR'
+    && payment?.payment_type === 'qris'
     && Number.isFinite(amount) && amount === Number(order.total);
+}
+
+async function existingMidtransPayment(order, config) {
+  try {
+    const payment = await midtransRequest('GET', `/v2/${encodeURIComponent(order.id)}/status`, undefined, config);
+    return matchingMidtransPayment(order, payment, config) ? payment : null;
+  } catch {
+    return null;
+  }
+}
+
+function cancelPendingOrder(orderId) {
+  const orders = readOrders();
+  const index = orders.findIndex((entry) => entry.id === orderId);
+  if (index < 0 || orders[index].paymentStatus !== 'pending') return null;
+  orders[index] = { ...orders[index], paymentStatus: 'cancelled', status: 'cancelled', cancelledAt: new Date().toISOString() };
+  saveOrders(orders);
+  return orders[index];
+}
+
+function midtransOrderTime(value) {
+  const timestamp = Date.parse(value);
+  if (!Number.isFinite(timestamp)) throw Object.assign(new Error('Waktu pesanan tidak valid untuk pembayaran.'), { status: 400 });
+  return `${new Date(timestamp + 7 * 60 * 60 * 1000).toISOString().replace('T', ' ').slice(0, 19)} +0700`;
+}
+
+function midtransChargeBody(order) {
+  const items = order.kind === 'reseller-plan'
+    ? [{ id: 'reseller-plan', price: Number(order.total), quantity: 1, name: 'Paket reseller Bacshop' }]
+    : order.items.map((item) => ({
+      id: String(item.productId).slice(0, 50),
+      price: Number(item.unitPrice),
+      quantity: Number(item.quantity),
+      name: String(item.name).slice(0, 50),
+    }));
+  const user = readUsers().find((entry) => entry.id === order.userId);
+  const nameParts = String(user?.name || '').trim().split(/\s+/).filter(Boolean);
+  const customerDetails = user ? {
+    first_name: (nameParts.shift() || 'Pelanggan').slice(0, 50),
+    ...(nameParts.length ? { last_name: nameParts.join(' ').slice(0, 50) } : {}),
+    email: String(user.email).slice(0, 254),
+  } : undefined;
+  return {
+    payment_type: 'qris',
+    transaction_details: { order_id: order.id, gross_amount: Number(order.total) },
+    item_details: items,
+    ...(customerDetails ? { customer_details: customerDetails } : {}),
+    qris: { acquirer: 'gopay' },
+    custom_expiry: { order_time: midtransOrderTime(order.createdAt), expiry_duration: 30, unit: 'minute' },
+  };
 }
 
 async function createOrderQris(order) {
@@ -669,35 +791,43 @@ async function createOrderQris(order) {
   let payment;
   if (order.midtransTransactionId) {
     payment = await midtransRequest('GET', `/v2/${encodeURIComponent(order.id)}/status`, undefined, config);
-    if (payment.order_id !== order.id || !matchingMidtransPayment(order, payment)) throw Object.assign(new Error('Status QRIS yang ditemukan tidak cocok dengan pesanan.'), { status: 502 });
-    if (['settlement', 'capture'].includes(payment.transaction_status)) {
-      if (payment.status_code !== '200' || payment.fraud_status && payment.fraud_status !== 'accept') throw Object.assign(new Error('Pembayaran belum dapat diverifikasi.'), { status: 502 });
-      const result = savePaidOrder(order, 'QRIS otomatis', payment.transaction_id || order.id);
-      if (result.error) throw Object.assign(new Error(result.error), { status: 409 });
-      return result.order;
-    }
-    if (payment.transaction_status !== 'pending') throw Object.assign(new Error('QRIS untuk pesanan ini sudah tidak aktif. Buat pesanan baru untuk membayar.'), { status: 409 });
+    if (!matchingMidtransPayment(order, payment, config)) throw Object.assign(new Error('Status QRIS yang ditemukan tidak cocok dengan pesanan.'), { status: 502 });
   } else {
-    payment = await midtransRequest('POST', '/v2/charge', {
-      payment_type: 'qris',
-      transaction_details: { order_id: order.id, gross_amount: Number(order.total) },
-      qris: { acquirer: 'gopay' },
-    }, config);
+    try {
+      payment = await midtransRequest('POST', '/v2/charge', midtransChargeBody(order), config);
+    } catch (error) {
+      const possiblyCreated = error.transportFailure || [406, 409].includes(error.providerHttpStatus) || /duplicate|already exists/i.test(error.providerMessage || '');
+      if (!possiblyCreated || error.paymentChannelInactive) throw error;
+      payment = await existingMidtransPayment(order, config);
+      if (!payment) throw error;
+    }
   }
 
   if (String(payment.status_code) === '402' && /payment channel is not activated/i.test(String(payment.status_message || ''))) {
     throw Object.assign(new Error('Kanal QRIS dinamis belum diaktifkan untuk Core API akun Midtrans ini. Minta aktivasi QRIS dinamis untuk mode akun yang sedang dipakai.'), { status: 502 });
+  }
+  if (['settlement', 'capture'].includes(payment.transaction_status)) {
+    if (!['200', '201'].includes(String(payment.status_code)) || payment.fraud_status !== 'accept') throw Object.assign(new Error('Pembayaran belum dapat diverifikasi.'), { status: 502 });
+    const result = savePaidOrder(order, 'QRIS otomatis', payment.transaction_id || order.id);
+    if (result.error) throw Object.assign(new Error(result.error), { status: 409 });
+    return result.order;
+  }
+  if (['expire', 'cancel', 'deny'].includes(payment.transaction_status)) {
+    cancelPendingOrder(order.id);
+    throw Object.assign(new Error('QRIS untuk pesanan ini sudah tidak aktif. Buat pesanan baru untuk membayar.'), { status: 409 });
   }
   const responseMatches = {
     orderId: payment.order_id === order.id,
     amount: Number(payment.gross_amount) === Number(order.total),
     method: payment.payment_type === 'qris',
     status: payment.transaction_status === 'pending',
+    merchant: typeof payment.merchant_id === 'string' && payment.merchant_id.length > 0 && (!config.merchantId || payment.merchant_id === config.merchantId),
+    currency: payment.currency === 'IDR',
     accepted: ['200', '201'].includes(String(payment.status_code)),
   };
   const mismatches = Object.entries(responseMatches).filter(([, matches]) => !matches).map(([field]) => field);
   if (mismatches.length) {
-    const labels = { orderId: 'ID pesanan', amount: 'nominal', method: 'metode QRIS', status: 'status transaksi', accepted: 'kode respons' };
+    const labels = { orderId: 'ID pesanan', amount: 'nominal', method: 'metode QRIS', status: 'status transaksi', merchant: 'identitas merchant', currency: 'mata uang', accepted: 'kode respons' };
     throw Object.assign(new Error(`Respons Midtrans tidak cocok pada ${mismatches.map((field) => labels[field]).join(', ')}.`), { status: 502 });
   }
 
@@ -707,7 +837,9 @@ async function createOrderQris(order) {
   const imageSource = {
     ...payment,
     qr_string: payment.qr_string || order.paymentQrString || '',
-    actions: Array.isArray(payment.actions) && payment.actions.length ? payment.actions : order.paymentQrActions || [],
+    actions: Array.isArray(payment.actions) && payment.actions.length ? payment.actions : order.paymentQrActions?.length ? order.paymentQrActions : payment.transaction_id
+      ? [{ name: 'generate-qr-code', method: 'GET', url: `${config.baseUrl}/v2/qris/${encodeURIComponent(payment.transaction_id)}/qr-code` }]
+      : [],
   };
   const initialized = {
     ...orders[index],
@@ -766,9 +898,57 @@ function savePaidOrder(order, provider, reference) {
   return result;
 }
 
+function refundIsConfirmed(payment, order) {
+  if (payment?.transaction_status !== 'refund' || Number(payment.refund_amount) !== Number(order.total)) return false;
+  if (payment.bank_confirmed_at) return true;
+  return Array.isArray(payment.refunds) && payment.refunds.some((refund) => refund?.bank_confirmed_at && Number(refund.refund_amount) === Number(order.total));
+}
+
+function saveRefundRequest(order, refundKey, reason, providerStatus = 'requested', actor = 'Admin') {
+  const orders = readOrders();
+  const index = orders.findIndex((entry) => entry.id === order.id);
+  if (index < 0 || orders[index].paymentStatus !== 'paid') return { error: 'Pesanan tidak lagi berstatus lunas.' };
+  const current = orders[index];
+  const updated = {
+    ...current,
+    refundStatus: 'requested',
+    refundKey: current.refundKey || refundKey,
+    refundReason: current.refundReason || reason,
+    refundRequestedAt: current.refundRequestedAt || new Date().toISOString(),
+    refundProviderStatus: providerStatus,
+  };
+  orders[index] = updated;
+  saveOrders(orders);
+  if (!current.refundRequestedAt) saveAudit({ actor, action: 'payment_refund_requested', orderId: order.id, amount: order.total });
+  return { order: updated };
+}
+
+function saveConfirmedRefund(order, payment, provider = 'QRIS otomatis') {
+  if (!refundIsConfirmed(payment, order)) return { error: 'Midtrans belum mengonfirmasi pengembalian dana sepenuhnya.' };
+  const orders = readOrders();
+  const index = orders.findIndex((entry) => entry.id === order.id);
+  if (index < 0) return { error: 'Pesanan tidak ditemukan.' };
+  if (orders[index].paymentStatus === 'refunded') return { order: orders[index], changed: false };
+  if (orders[index].paymentStatus !== 'paid') return { error: 'Hanya pesanan lunas yang dapat dikembalikan.' };
+  const updated = {
+    ...orders[index],
+    paymentStatus: 'refunded',
+    status: 'refunded',
+    refundStatus: 'confirmed',
+    refundedAt: new Date().toISOString(),
+    refundProviderReference: payment.transaction_id || order.midtransTransactionId || '',
+  };
+  orders[index] = updated;
+  saveOrders(orders);
+  syncResellerAccess(updated, orders);
+  saveAudit({ actor: provider, action: 'payment_refunded', orderId: updated.id, amount: updated.total });
+  return { order: updated, changed: true };
+}
+
 async function handleApi(req, res, url) {
   if (req.method === 'POST' && url.pathname === MIDTRANS_NOTIFY_PATH) return handleMidtransNotify(req, res);
-  if (!localRequest(req)) return json(res, 403, { error: 'Admin hanya dapat diakses dari komputer ini.' });
+  if (['POST', 'PUT', 'DELETE'].includes(req.method) && !sameOrigin(req)) return json(res, 403, { error: 'Permintaan hanya dapat dimulai dari situs Bacshop.' });
+  if (req.method === 'GET' && url.pathname === '/api/health') return json(res, 200, { status: 'ok', paymentConfigured: Boolean(midtransConfig()) });
   if (req.method === 'GET' && url.pathname === '/api/auth/session') {
     const user = activeUser(req);
     return json(res, 200, { user: user ? publicUser(user) : null });
@@ -826,22 +1006,26 @@ async function handleApi(req, res, url) {
     if (!user) return json(res, 401, { error: 'Masuk untuk memeriksa pembayaran.' });
     const order = readOrders().find((entry) => entry.id === checkPaymentMatch[1] && entry.userId === user.id);
     if (!order) return json(res, 404, { error: 'Pesanan tidak ditemukan.' });
-    if (order.paymentStatus === 'paid' || order.paymentStatus === 'refunded') return json(res, 200, { order: publicOrder(order) });
+    if (order.paymentStatus === 'refunded' || order.paymentStatus === 'paid' && order.refundStatus !== 'requested') return json(res, 200, { order: publicOrder(order) });
     const config = midtransConfig();
     const payment = await midtransRequest('GET', `/v2/${encodeURIComponent(order.id)}/status`, undefined, config);
-    if (payment.order_id !== order.id) return json(res, 502, { error: 'Status pembayaran tidak cocok dengan pesanan.' });
-    if (['settlement', 'capture'].includes(payment.transaction_status)) {
-      if (!matchingMidtransPayment(order, payment) || payment.status_code !== '200' || payment.fraud_status && payment.fraud_status !== 'accept') return json(res, 502, { error: 'Data pembayaran tidak cocok dengan nominal pesanan.' });
+    if (!matchingMidtransPayment(order, payment, config)) return json(res, 502, { error: 'Status pembayaran tidak cocok dengan pesanan.' });
+    if (payment.transaction_status === 'settlement') {
+      if (payment.status_code !== '200' || payment.fraud_status !== 'accept') return json(res, 502, { error: 'Data pembayaran tidak cocok dengan nominal pesanan.' });
       const result = savePaidOrder(order, 'QRIS otomatis', payment.transaction_id || order.id);
       const updated = result.order || readOrders().find((entry) => entry.id === order.id);
       return json(res, 200, { order: publicOrder(updated) });
     }
+    if (payment.transaction_status === 'refund' && order.paymentStatus === 'paid') {
+      const result = refundIsConfirmed(payment, order)
+        ? saveConfirmedRefund(order, payment)
+      : saveRefundRequest(order, order.refundKey || `BCREFUND-${order.id}`, order.refundReason || 'Refund diproses melalui Midtrans.', 'requested', 'Midtrans');
+      if (result.error) return json(res, 409, { error: result.error });
+      return json(res, 200, { order: publicOrder(result.order) });
+    }
     if (['expire', 'cancel', 'deny'].includes(payment.transaction_status) && order.paymentStatus === 'pending') {
-      const orders = readOrders();
-      const index = orders.findIndex((entry) => entry.id === order.id);
-      orders[index] = { ...orders[index], paymentStatus: 'cancelled', status: 'cancelled', cancelledAt: new Date().toISOString() };
-      saveOrders(orders);
-      return json(res, 200, { order: publicOrder(orders[index]) });
+      const cancelled = cancelPendingOrder(order.id);
+      return json(res, 200, { order: publicOrder(cancelled || order) });
     }
     return json(res, 200, { order: publicOrder(order), providerStatus: payment.transaction_status || 'pending' });
   }
@@ -868,8 +1052,6 @@ async function handleApi(req, res, url) {
     if (!activeSession(req)) return json(res, adminAuthStatus(req), { error: 'Masuk sebagai admin untuk melanjutkan.' });
     return json(res, 200, { entries: readJson(AUDIT_FILE, []) });
   }
-  if (['POST', 'PUT', 'DELETE'].includes(req.method) && !sameOrigin(req)) return json(res, 403, { error: 'Permintaan hanya dapat dimulai dari halaman Bacshop lokal.' });
-
   if (req.method === 'POST' && url.pathname === '/api/auth/register') {
     if (limitedLogin(req, userLoginAttempts)) return json(res, 429, { error: 'Terlalu banyak percobaan. Coba lagi setelah 15 menit.' });
     const body = await readBody(req);
@@ -885,7 +1067,7 @@ async function handleApi(req, res, url) {
     users.push(user);
     saveUsers(users);
     setUserSession(res, user.id);
-    userLoginAttempts.delete(req.socket.remoteAddress || 'local');
+    userLoginAttempts.delete(clientAddress(req));
     return json(res, 201, { user: publicUser(user) });
   }
 
@@ -898,7 +1080,7 @@ async function handleApi(req, res, url) {
       failedLogin(req, userLoginAttempts);
       return json(res, 401, { error: 'Email atau kata sandi belum cocok.' });
     }
-    userLoginAttempts.delete(req.socket.remoteAddress || 'local');
+    userLoginAttempts.delete(clientAddress(req));
     setUserSession(res, user.id);
     return json(res, 200, { user: publicUser(user) });
   }
@@ -1039,23 +1221,39 @@ async function handleApi(req, res, url) {
     if (!admin) return json(res, adminAuthStatus(req), { error: 'Masuk sebagai admin untuk melanjutkan.' });
     const body = await readBody(req);
     const reason = typeof body.reason === 'string' ? body.reason.trim() : '';
-    if (reason.length < 3 || reason.length > 500) return json(res, 400, { error: 'Catat alasan refund.' });
+    if (reason.length < 3 || reason.length > 255) return json(res, 400, { error: 'Catat alasan refund maksimal 255 karakter.' });
     const orders = readOrders();
     const orderIndex = orders.findIndex((entry) => entry.id === adminRefundMatch[1]);
     if (orderIndex < 0) return json(res, 404, { error: 'Pesanan tidak ditemukan.' });
-    if (orders[orderIndex].paymentStatus !== 'paid') return json(res, 409, { error: 'Hanya pesanan lunas yang dapat ditandai refund.' });
-    orders[orderIndex] = { ...orders[orderIndex], paymentStatus: 'refunded', status: 'refunded', refundedAt: new Date().toISOString(), refundReason: reason };
-    saveOrders(orders);
-    const users = readUsers();
-    const userIndex = users.findIndex((entry) => entry.id === orders[orderIndex].userId);
-    if (userIndex >= 0) {
-      const user = users[userIndex];
-      const hasActivePlan = orders.some((entry) => entry.userId === user.id && entry.kind === 'reseller-plan' && entry.paymentStatus === 'paid');
-      users[userIndex] = { ...user, resellerPlan: { ...(user.resellerPlan || {}), active: hasActivePlan }, productEntitlements: resellerEntitlementsFor(user, orders, readProducts()) };
-      saveUsers(users);
+    const order = orders[orderIndex];
+    if (order.paymentStatus !== 'paid') return json(res, 409, { error: 'Hanya pesanan lunas yang dapat direfund.' });
+    if (order.paymentProvider !== 'qris_dynamic' || !order.midtransTransactionId) return json(res, 409, { error: 'ID transaksi QRIS belum tersedia untuk refund.' });
+    if (order.refundStatus === 'requested' && order.refundReason !== reason) return json(res, 409, { error: 'Ulangi permintaan refund dengan alasan yang sama agar Midtrans tidak menerima ID refund baru.' });
+    if (paymentRefundLocks.has(order.id)) return json(res, 409, { error: 'Refund sedang diproses. Tunggu sebentar lalu periksa kembali.' });
+    const refundKey = order.refundKey || `BCREFUND-${order.id}`;
+    const prepared = saveRefundRequest(order, refundKey, reason, 'requested', admin.email);
+    if (prepared.error) return json(res, 409, { error: prepared.error });
+    paymentRefundLocks.add(order.id);
+    try {
+      const payment = await midtransRequest('POST', `/v2/${encodeURIComponent(order.midtransTransactionId)}/refund`, {
+        refund_key: refundKey,
+        amount: Number(order.total),
+        reason,
+      });
+      if (payment.order_id !== order.id || payment.transaction_id !== order.midtransTransactionId || payment.payment_type !== 'qris' || Number(payment.gross_amount) !== Number(order.total) || Number(payment.refund_amount) !== Number(order.total) || payment.status_code !== '200' || payment.transaction_status !== 'refund') {
+        return json(res, 502, { error: 'Midtrans belum mengonfirmasi refund penuh. Status pesanan tetap lunas sampai refund terverifikasi.' });
+      }
+      const updated = refundIsConfirmed(payment, prepared.order)
+        ? saveConfirmedRefund(prepared.order, payment, admin.email)
+        : saveRefundRequest(prepared.order, refundKey, reason, payment.transaction_status, admin.email);
+      if (updated.error) return json(res, 409, { error: updated.error });
+      const confirmed = updated.order.paymentStatus === 'refunded';
+      return json(res, confirmed ? 200 : 202, { order: publicOrder(updated.order), refundConfirmed: confirmed });
+    } catch (error) {
+      return json(res, error.status || 502, { error: 'Midtrans belum dapat memproses refund. Pesanan tetap lunas; ulangi dengan alasan yang sama atau periksa transaksi pada dashboard Midtrans.' });
+    } finally {
+      paymentRefundLocks.delete(order.id);
     }
-    saveAudit({ actor: admin.email, action: 'payment_refunded', orderId: orders[orderIndex].id, amount: orders[orderIndex].total, reason });
-    return json(res, 200, { order: orders[orderIndex] });
   }
 
   const adminFulfillmentMatch = url.pathname.match(/^\/api\/admin\/orders\/([A-Za-z0-9-]+)\/fulfillment$/);
@@ -1101,7 +1299,7 @@ async function handleApi(req, res, url) {
       recordLoginFailure(req);
       return json(res, 401, { error: 'Email atau kata sandi belum cocok.' });
     }
-    loginAttempts.delete(req.socket.remoteAddress || 'local');
+    loginAttempts.delete(clientAddress(req));
     setSession(res, adminRecord.email);
     return json(res, 200, { authenticated: true, email: adminRecord.email });
   }
@@ -1230,15 +1428,18 @@ function serveStatic(req, res, pathname) {
   const allowed = normalized === '/' || normalized === '/index.html' || normalized === '/app.js' || normalized === '/styles.css' || normalized.startsWith('/assets/');
   if (!allowed) return json(res, 404, { error: 'File tidak ditemukan.' });
   const relative = normalized === '/' ? 'index.html' : normalized.slice(1);
-  const absolute = path.resolve(ROOT, relative);
-  if (!absolute.startsWith(`${ROOT}${path.sep}`)) return json(res, 404, { error: 'File tidak ditemukan.' });
+  const uploadPrefix = '/assets/uploads/';
+  const absolute = normalized.startsWith(uploadPrefix)
+    ? path.resolve(UPLOAD_DIR, normalized.slice(uploadPrefix.length))
+    : path.resolve(ROOT, relative);
+  const allowedRoot = normalized.startsWith(uploadPrefix) ? path.resolve(UPLOAD_DIR) : ROOT;
+  if (!absolute.startsWith(`${allowedRoot}${path.sep}`)) return json(res, 404, { error: 'File tidak ditemukan.' });
   let contents;
   try { contents = fs.readFileSync(absolute); } catch { return json(res, 404, { error: 'File tidak ditemukan.' }); }
   res.writeHead(200, {
     'Content-Type': MIME[path.extname(absolute)] || 'application/octet-stream',
     'Cache-Control': 'no-store',
-    'X-Content-Type-Options': 'nosniff',
-    'Referrer-Policy': 'strict-origin-when-cross-origin',
+    ...standardSecurityHeaders(),
       'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'",
   });
   res.end(req.method === 'HEAD' ? undefined : contents);

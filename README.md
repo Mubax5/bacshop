@@ -1,6 +1,6 @@
 # Bacshop storefront
 
-Storefront yang dibuat dari awal di workspace Tokopedia yang diunduh. HTML Tokopedia yang disediakan menjadi satu-satunya referensi tampilan; aplikasi ini tidak memakai kode produksi Tokopedia atau proyek Bacshop yang terpisah.
+Ini adalah repo kanonis Bacshop dengan storefront Node.js yang memakai `server.js`, `index.html`, `app.js`, dan `styles.css`. Tokopedia hanya menjadi referensi tampilan; aplikasi ini tidak memuat kode atau aset produksi Tokopedia.
 
 ## Menjalankan aplikasi
 
@@ -47,6 +47,36 @@ node server.js
 ```
 
 Daftarkan callback HTTPS publik `https://<domain>/api/payments/notify` pada dashboard akun pembayaran agar status pesanan diperbarui otomatis. Callback lokal `127.0.0.1` tidak dapat dijangkau dari internet; tombol periksa pembayaran tetap menggunakan status API server. Untuk production, gunakan Server Key production dan set `MIDTRANS_IS_PRODUCTION=true`. Client Key tidak diperlukan karena pembayaran memakai Core API dari server dan tidak memuat Snap.js.
+
+## Menjalankan di production
+
+Production harus memakai satu proses Node.js pada satu server dengan penyimpanan disk yang persisten. Data akun, pesanan, audit, produk, dan unggahan disimpan sebagai file; jangan menjalankan beberapa replika Bacshop yang menulis folder data yang sama. Pasang TLS pada reverse proxy publik dan teruskan trafik ke Node di `127.0.0.1:4173`. Origin browser yang dikonfigurasi harus sama persis dengan domain publik HTTPS.
+
+Atur environment production berikut sebelum mulai:
+
+```dotenv
+NODE_ENV=production
+HOST=127.0.0.1
+PORT=4173
+BACSHOP_PUBLIC_ORIGIN=https://shop.domain-anda.id
+BACSHOP_DATA_DIR=/var/lib/bacshop/private
+BACSHOP_PRODUCTS_FILE=/var/lib/bacshop/products.json
+BACSHOP_UPLOADS_DIR=/var/lib/bacshop/uploads
+BACSHOP_ADMIN_SETUP_CODE=<kode-acak-minimal-32-karakter>
+MIDTRANS_SERVER_KEY=<server-key-production>
+MIDTRANS_MERCHANT_ID=<merchant-id-production>
+MIDTRANS_IS_PRODUCTION=true
+```
+
+Salin `data/products.json` ke `BACSHOP_PRODUCTS_FILE` saat menyiapkan server pertama kali. Pastikan folder data dan unggahan berada pada volume yang tetap ada saat aplikasi diperbarui, dibatasi ke akun proses Bacshop, dan masuk jadwal backup terenkripsi. Simpan kredensial di secret manager atau environment host; jangan masukkan nilainya ke Git, log deployment, tiket, atau chat. `BACSHOP_ADMIN_SETUP_CODE` dipakai satu kali saat membuat akun admin pertama dan tidak dicetak ke log production.
+
+Jika memakai reverse proxy, set `BACSHOP_TRUSTED_PROXY_IPS` hanya ke alamat proxy yang benar-benar tersambung ke Node, dan pastikan proxy menghapus lalu menulis ulang `X-Forwarded-For`. Header tersebut hanya dipakai untuk pembatasan percobaan login; tanpa proxy yang dipercaya, aplikasi mengabaikannya.
+
+Setelah konfigurasi benar, jalankan `npm start`. Startup production gagal dengan pesan yang tidak memuat rahasia jika origin HTTPS, folder persistent, atau kunci Midtrans Production belum disiapkan. `GET /api/health` memberi status hidup dan apakah kunci pembayaran terkonfigurasi; status itu tidak membuktikan QRIS aktif di akun Midtrans. Daftarkan `https://shop.domain-anda.id/api/payments/notify` sebagai HTTP notification URL Production pada dashboard Midtrans.
+
+Sebelum menerima pembeli, jalankan `npm test`, lalu cek login admin, pendaftaran buyer, pesanan, QRIS, callback, dan pemenuhan. QRIS dibuat setelah pesanan dikonfirmasi; status lunas hanya berubah setelah respons status/callback Midtrans cocok pada ID merchant, mata uang, nominal, metode QRIS, dan fraud status.
+
+Core API Production dan QRIS dinamis harus aktif pada akun merchant Production. Sandbox aktif secara default, tetapi Core API Production perlu diminta aktivasinya. Jika provider mengembalikan `402 Payment channel is not activated`, jangan membuka penjualan live sebelum Midtrans mengonfirmasi aktivasi dan satu transaksi uji Production berhasil.
 
 Konten penjualan tidak mengarang ulasan, jumlah penjualan, atau pesanan. Informasi yang belum dikonfigurasi ditampilkan sebagai belum tersedia, bukan sebagai transaksi nyata.
 

@@ -14,12 +14,15 @@ let serverProcess;
 let midtransServer;
 let baseUrl;
 let midtransBaseUrl;
+let publicOrigin;
 let tempDirectory;
 let adminCookie;
 let midtransRequests = [];
 let midtransStatus = 'pending';
 let midtransTransactions = new Map();
 let midtransChargeResponse = null;
+let midtransRefundResponse = null;
+let dropChargeResponseOnce = false;
 let serverOutput = '';
 
 async function freePort() {
@@ -36,7 +39,7 @@ async function request(route, { method = 'GET', body, cookie, headers = {} } = {
     method,
     headers: {
       ...(body === undefined ? {} : { 'content-type': 'application/json' }),
-      ...(method !== 'GET' ? { origin: baseUrl } : {}),
+      ...(method !== 'GET' ? { origin: publicOrigin || baseUrl } : {}),
       ...(cookie ? { cookie } : {}),
       ...headers,
     },
@@ -57,6 +60,8 @@ function cookieFrom(response) {
 before(async () => {
   midtransTransactions = new Map();
   midtransChargeResponse = null;
+  midtransRefundResponse = null;
+  dropChargeResponseOnce = false;
   serverOutput = '';
   midtransServer = http.createServer(async (req, res) => {
     let raw = '';
@@ -71,6 +76,11 @@ before(async () => {
       }
       const orderId = body.transaction_details.order_id;
       midtransTransactions.set(orderId, Number(body.transaction_details.gross_amount));
+      if (dropChargeResponseOnce) {
+        dropChargeResponseOnce = false;
+        req.socket.destroy();
+        return;
+      }
       res.end(JSON.stringify({
         status_code: '201', status_message: 'QRIS transaction is created', transaction_id: `MTX-${orderId}`,
         order_id: orderId, merchant_id: 'merchant-test', gross_amount: `${body.transaction_details.gross_amount}.00`,
@@ -81,6 +91,15 @@ before(async () => {
           { name: 'generate-qr-code', method: 'GET', url: `${midtransBaseUrl}/v2/qris/MTX-${orderId}/qr-code` },
         ],
       }));
+    } else if (req.method === 'POST' && /^\/v2\/.+\/refund$/.test(req.url)) {
+      const transactionId = decodeURIComponent(req.url.slice('/v2/'.length, -'/refund'.length));
+      const orderId = transactionId.startsWith('MTX-') ? transactionId.slice(4) : transactionId;
+      const amount = midtransTransactions.get(orderId);
+      res.end(JSON.stringify(midtransRefundResponse || {
+        status_code: '200', status_message: 'Success, refund request is approved', transaction_id: transactionId,
+        order_id: orderId, payment_type: 'qris', transaction_status: 'refund', gross_amount: `${amount}.00`, refund_amount: `${amount}.00`,
+        refunds: [{ refund_amount: `${amount}.00`, bank_confirmed_at: new Date().toISOString() }],
+      }));
     } else if (req.method === 'GET' && /^\/v4\/qris\/.+\/qr-code$/.test(req.url)) {
       res.writeHead(503, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ status_code: '503', status_message: 'Image unavailable' }));
@@ -89,6 +108,11 @@ before(async () => {
       res.end(Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+j0ioAAAAASUVORK5CYII=', 'base64'));
     } else if (req.method === 'GET' && /^\/v2\/.+\/status$/.test(req.url)) {
       const orderId = decodeURIComponent(req.url.slice('/v2/'.length, -'/status'.length));
+      if (!midtransTransactions.has(orderId)) {
+        res.writeHead(404);
+        res.end(JSON.stringify({ status_code: '404', status_message: 'Transaction not found' }));
+        return;
+      }
       res.end(JSON.stringify({
         status_code: '200', transaction_id: `MTX-${orderId}`, order_id: orderId, merchant_id: 'merchant-test',
         gross_amount: `${midtransTransactions.get(orderId)}.00`, currency: 'IDR', payment_type: 'qris', transaction_status: midtransStatus,
@@ -106,9 +130,11 @@ before(async () => {
   await fs.mkdir(uploadDirectory, { recursive: true });
   const port = await freePort();
   baseUrl = `http://127.0.0.1:${port}`;
+  publicOrigin = 'https://bacshop.example';
   serverProcess = spawn(process.execPath, ['server.js'], {
     cwd: root,
     env: { ...process.env, NODE_ENV: 'test', PORT: String(port), BACSHOP_DATA_DIR: tempDirectory, BACSHOP_PRODUCTS_FILE: productFile, BACSHOP_UPLOADS_DIR: uploadDirectory,
+      BACSHOP_PUBLIC_ORIGIN: publicOrigin, BACSHOP_COOKIE_SECURE: 'true', BACSHOP_TRUSTED_PROXY_IPS: '127.0.0.1',
       MIDTRANS_API_BASE_URL: midtransBaseUrl, MIDTRANS_MERCHANT_ID: 'merchant-test', MIDTRANS_SERVER_KEY: 'test-server-key' },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -176,6 +202,10 @@ test('checkout confirms the order before creating a dynamic QRIS on the payment 
   assert.equal(charge.body.payment_type, 'qris');
   assert.equal(charge.body.transaction_details.order_id, order.data.order.id);
   assert.equal(charge.body.transaction_details.gross_amount, 149000);
+  assert.equal(charge.body.item_details.reduce((sum, item) => sum + item.price * item.quantity, 0), charge.body.transaction_details.gross_amount);
+  assert.equal(charge.body.customer_details.email, 'midtrans@example.test');
+  assert.equal(charge.body.custom_expiry.expiry_duration, 30);
+  assert.match(charge.body.custom_expiry.order_time, / \+0700$/);
   assert.equal(charge.headers.authorization, `Basic ${Buffer.from('test-server-key:').toString('base64')}`);
   assert.equal(midtransRequests.some((entry) => entry.method === 'POST' && entry.path.includes('dana')), false);
   const imageRequests = midtransRequests.filter((entry) => entry.method === 'GET' && entry.path.endsWith('/qr-code'));
@@ -187,6 +217,43 @@ test('checkout confirms the order before creating a dynamic QRIS on the payment 
   assert.equal(order.data.order.paymentInstructions.includes('Midtrans'), false);
   const storefrontScript = await fetch(`${baseUrl}/app.js`).then((response) => response.text());
   assert.doesNotMatch(storefrontScript, /Midtrans|DANA/, 'the shop interface contains no processor branding');
+});
+
+test('a lost charge response is reconciled through Midtrans status before retrying a charge', async () => {
+  midtransRequests = [];
+  dropChargeResponseOnce = true;
+  const registration = await request('/api/auth/register', {
+    method: 'POST', body: { name: 'Retry Buyer', email: 'retry-payment@example.test', password: 'BuyerPass123!' },
+  });
+  const buyerCookie = cookieFrom(registration.response);
+  const confirmed = await request('/api/orders', { method: 'POST', cookie: buyerCookie, body: { kind: 'reseller-plan' } });
+  const order = await createQris(confirmed.data.order.id, buyerCookie);
+  assert.equal(order.response.status, 200);
+  assert.match(order.data.order.qrisImage, /^data:image\/png;base64,/);
+  assert.equal(midtransRequests.filter((entry) => entry.method === 'POST' && entry.path === '/v2/charge').length, 1);
+  assert.equal(midtransRequests.filter((entry) => entry.method === 'GET' && entry.path === `/v2/${order.data.order.id}/status`).length, 1);
+  assert.ok(midtransRequests.some((entry) => entry.method === 'GET' && entry.path === `/v2/qris/MTX-${order.data.order.id}/qr-code`));
+});
+
+test('public HTTPS origin can use APIs with Secure cookies and foreign origins are rejected', async () => {
+  const health = await request('/api/health');
+  assert.equal(health.response.status, 200);
+  assert.equal(health.data.status, 'ok');
+  assert.equal(health.data.paymentConfigured, true);
+
+  const accepted = await request('/api/auth/register', {
+    method: 'POST', body: { name: 'Remote Buyer', email: 'remote-origin@example.test', password: 'BuyerPass123!' },
+  });
+  assert.equal(accepted.response.status, 201, 'the configured public HTTPS origin can register a buyer');
+  assert.match(accepted.response.headers.get('set-cookie'), /; Secure(?:;|$)/);
+  assert.match(accepted.response.headers.get('set-cookie'), /HttpOnly/);
+
+  const rejected = await request('/api/auth/register', {
+    method: 'POST', headers: { origin: 'https://attacker.example' },
+    body: { name: 'Blocked Buyer', email: 'blocked-origin@example.test', password: 'BuyerPass123!' },
+  });
+  assert.equal(rejected.response.status, 403);
+  assert.equal((await request('/api/health')).response.headers.get('x-frame-options'), 'DENY');
 });
 
 test('mismatched provider response gives a useful sanitized diagnostic', async () => {
@@ -207,6 +274,7 @@ test('mismatched provider response gives a useful sanitized diagnostic', async (
   assert.equal(order.response.status, 502);
   assert.match(order.data.error, /kode respons/);
   assert.doesNotMatch(serverOutput, /never-print-this-secret/);
+  assert.doesNotMatch(serverOutput, /Merchant onboarding incomplete/);
   assert.doesNotMatch(serverOutput, /test-server-key/);
 });
 
@@ -439,7 +507,7 @@ test('Midtrans QRIS payment status is verified before reseller access is unlocke
   assert.equal(pending.data.order.paymentStatus, 'pending');
   assert.ok(midtransRequests.some((entry) => entry.method === 'GET' && entry.path === `/v2/${order.data.order.id}/status`));
 
-  const callback = { order_id: order.data.order.id, status_code: '200', gross_amount: '149000.00', currency: 'IDR', transaction_status: 'settlement', transaction_id: 'MTX-SETTLED-002', merchant_id: 'merchant-test', fraud_status: 'accept' };
+  const callback = { order_id: order.data.order.id, status_code: '200', gross_amount: '149000.00', currency: 'IDR', payment_type: 'qris', transaction_status: 'settlement', transaction_id: 'MTX-SETTLED-002', merchant_id: 'merchant-test', fraud_status: 'accept' };
   callback.signature_key = crypto.createHash('sha512').update(`${callback.order_id}${callback.status_code}${callback.gross_amount}test-server-key`).digest('hex');
   const invalid = await request('/api/payments/notify', { method: 'POST', body: { ...callback, signature_key: 'invalid' } });
   assert.equal(invalid.response.status, 401);
@@ -559,12 +627,77 @@ test('verified paid bulk order permanently unlocks only its product reseller pri
   assert.equal(retail.price, 10000);
   assert.equal(retail.priceContext, 'retail');
 
+  const beforeRefundRequest = midtransRequests.length;
   const refunded = await request(`/api/admin/orders/${pendingOrder.data.order.id}/refund`, {
     method: 'POST', cookie: adminCookie, body: { reason: 'Pembayaran dikembalikan.' },
   });
   assert.equal(refunded.response.status, 200);
+  assert.equal(refunded.data.refundConfirmed, true);
+  assert.equal(refunded.data.order.paymentStatus, 'refunded');
+  const providerRefund = midtransRequests.slice(beforeRefundRequest).find((entry) => entry.method === 'POST' && entry.path.endsWith('/refund'));
+  assert.ok(providerRefund, 'refunds are submitted to Midtrans');
+  assert.equal(providerRefund.path, `/v2/MTX-${pendingOrder.data.order.id}/refund`);
+  assert.equal(providerRefund.body.amount, pendingOrder.data.order.total);
+  assert.equal(providerRefund.body.reason, 'Pembayaran dikembalikan.');
   const afterRefund = await request('/api/products', { cookie: buyerCookie });
   assert.equal(afterRefund.data.products.find((entry) => entry.id === 'bulk-item').price, 10000);
+});
+
+test('reseller access remains active until Midtrans confirms a full refund', async () => {
+  const product = {
+    id: 'refund-pending-item', slug: 'refund-pending-item', name: 'Produk refund', category: 'ai', price: 10000,
+    resellerPrice: 7000, bulkMinimum: 2, duration: '1 bulan', fulfillment: 'Kode digital',
+    description: 'Produk untuk menguji konfirmasi refund.', terms: {}, stock: null,
+    createdAt: '2026-09-29', orderMode: 'ready', preOrderConfirmed: true, image: '',
+  };
+  const created = await request('/api/admin/products', { method: 'POST', cookie: adminCookie, body: { product } });
+  assert.equal(created.response.status, 201);
+  const registration = await request('/api/auth/register', {
+    method: 'POST', body: { name: 'Refund Buyer', email: 'refund-pending@example.test', password: 'BuyerPass123!' },
+  });
+  const buyerCookie = cookieFrom(registration.response);
+  const order = await request('/api/orders', { method: 'POST', cookie: buyerCookie, body: { items: [{ id: product.id, quantity: 2 }] } });
+  assert.equal(order.response.status, 201);
+  const qris = await createQris(order.data.order.id, buyerCookie);
+  assert.equal(qris.response.status, 200);
+  midtransStatus = 'settlement';
+  const paid = await request(`/api/orders/${order.data.order.id}/check-payment`, { method: 'POST', cookie: buyerCookie, body: {} });
+  midtransStatus = 'pending';
+  assert.equal(paid.data.order.paymentStatus, 'paid');
+
+  const txId = `MTX-${order.data.order.id}`;
+  midtransRefundResponse = {
+    status_code: '200', transaction_id: txId, order_id: order.data.order.id, payment_type: 'qris',
+    transaction_status: 'refund', gross_amount: '20000.00', refund_amount: '20000.00',
+  };
+  const pendingRefund = await request(`/api/admin/orders/${order.data.order.id}/refund`, {
+    method: 'POST', cookie: adminCookie, body: { reason: 'Pesanan dibatalkan.' },
+  });
+  assert.equal(pendingRefund.response.status, 202);
+  assert.equal(pendingRefund.data.refundConfirmed, false);
+  assert.equal(pendingRefund.data.order.paymentStatus, 'paid');
+  assert.equal(pendingRefund.data.order.refundStatus, 'requested');
+  assert.equal('refundReason' in pendingRefund.data.order, false);
+  const productWhileRefundPending = await request('/api/products', { cookie: buyerCookie });
+  assert.equal(productWhileRefundPending.data.products.find((entry) => entry.id === product.id).price, 7000);
+
+  midtransRefundResponse = {
+    ...midtransRefundResponse,
+    refunds: [{ refund_amount: '20000.00', bank_confirmed_at: new Date().toISOString() }],
+  };
+  const beforeRetry = midtransRequests.length;
+  const confirmedRefund = await request(`/api/admin/orders/${order.data.order.id}/refund`, {
+    method: 'POST', cookie: adminCookie, body: { reason: 'Pesanan dibatalkan.' },
+  });
+  assert.equal(confirmedRefund.response.status, 200);
+  assert.equal(confirmedRefund.data.refundConfirmed, true);
+  assert.equal(confirmedRefund.data.order.paymentStatus, 'refunded');
+  const retry = midtransRequests.slice(beforeRetry).find((entry) => entry.method === 'POST' && entry.path.endsWith('/refund'));
+  const firstRefund = midtransRequests.find((entry) => entry.method === 'POST' && entry.path.endsWith('/refund') && entry.path.includes(order.data.order.id));
+  assert.equal(retry.body.refund_key, firstRefund.body.refund_key, 'retries reuse one provider refund key');
+  const productAfterRefund = await request('/api/products', { cookie: buyerCookie });
+  assert.equal(productAfterRefund.data.products.find((entry) => entry.id === product.id).price, 10000);
+  midtransRefundResponse = null;
 });
 
 test('admin CMS changes persist and image uploads validate content', async () => {
@@ -584,6 +717,10 @@ test('admin CMS changes persist and image uploads validate content', async () =>
   });
   assert.equal(uploaded.response.status, 201);
   assert.match(uploaded.data.imageUrl, /^\/assets\/uploads\/[a-z0-9-]+\.png$/);
+  const uploadedImageResponse = await fetch(`${baseUrl}${uploaded.data.imageUrl}`);
+  assert.equal(uploadedImageResponse.status, 200);
+  assert.equal(uploadedImageResponse.headers.get('content-type'), 'image/png');
+  assert.deepEqual(Buffer.from(await uploadedImageResponse.arrayBuffer()), Buffer.from(png, 'base64'));
 
   const saved = await request('/api/admin/storefront', { cookie: adminCookie });
   assert.equal(saved.data.banners[0].title, 'Banner tersimpan');
