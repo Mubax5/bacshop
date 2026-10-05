@@ -820,6 +820,110 @@ test('reseller access remains active until Midtrans confirms a full refund', asy
   midtransRefundResponse = null;
 });
 
+test('a confirmed reseller-plan refund removes plan access', async () => {
+  midtransStatus = 'pending';
+  const registration = await request('/api/auth/register', {
+    method: 'POST', body: { name: 'Plan Refund Buyer', email: 'plan-refund@example.test', password: 'BuyerPass123!' },
+  });
+  const buyerCookie = cookieFrom(registration.response);
+  const order = await request('/api/orders', { method: 'POST', cookie: buyerCookie, body: { kind: 'reseller-plan' } });
+  assert.equal(order.response.status, 201);
+  const qris = await createQris(order.data.order.id, buyerCookie);
+  assert.equal(qris.response.status, 200);
+  midtransStatus = 'settlement';
+  const paid = await request(`/api/orders/${order.data.order.id}/check-payment`, { method: 'POST', cookie: buyerCookie, body: {} });
+  midtransStatus = 'pending';
+  assert.equal(paid.data.order.paymentStatus, 'paid');
+  const activeSession = await request('/api/auth/session', { cookie: buyerCookie });
+  assert.equal(activeSession.data.user.resellerPlan, true);
+
+  const refund = await request(`/api/admin/orders/${order.data.order.id}/refund`, {
+    method: 'POST', cookie: adminCookie, body: { reason: 'Paket dikembalikan.' },
+  });
+  assert.equal(refund.response.status, 200);
+  assert.equal(refund.data.order.paymentStatus, 'refunded');
+  const refundedSession = await request('/api/auth/session', { cookie: buyerCookie });
+  assert.equal(refundedSession.data.user.resellerPlan, false);
+});
+
+test('duplicate payment notifications repair entitlements and deduct managed stock once', async () => {
+  midtransStatus = 'pending';
+  const product = {
+    id: 'retry-stock-item', slug: 'retry-stock-item', name: 'Produk stok retry', category: 'ai', price: 10000,
+    resellerPrice: 7000, bulkMinimum: 2, duration: '1 bulan', fulfillment: 'Aktivasi digital',
+    description: 'Produk untuk menguji pemulihan pembayaran.', terms: {}, stock: 5,
+    createdAt: '2026-09-29', orderMode: 'ready', preOrderConfirmed: true, image: '',
+  };
+  const created = await request('/api/admin/products', { method: 'POST', cookie: adminCookie, body: { product } });
+  assert.equal(created.response.status, 201);
+  const registration = await request('/api/auth/register', {
+    method: 'POST', body: { name: 'Retry Buyer', email: 'retry-buyer@example.test', password: 'BuyerPass123!' },
+  });
+  const buyerCookie = cookieFrom(registration.response);
+  const order = await request('/api/orders', {
+    method: 'POST', cookie: buyerCookie, body: { items: [{ id: product.id, quantity: 2 }] },
+  });
+  assert.equal(order.response.status, 201);
+  const qris = await createQris(order.data.order.id, buyerCookie);
+  assert.equal(qris.response.status, 200);
+
+  const callback = {
+    order_id: order.data.order.id, status_code: '200', gross_amount: '20000.00', currency: 'IDR',
+    payment_type: 'qris', transaction_status: 'settlement', transaction_id: 'MTX-RETRY-SETTLEMENT',
+    merchant_id: 'merchant-test', fraud_status: 'accept',
+  };
+  callback.signature_key = crypto.createHash('sha512').update(`${callback.order_id}${callback.status_code}${callback.gross_amount}test-server-key`).digest('hex');
+  const firstNotification = await request('/api/payments/notify', { method: 'POST', body: callback });
+  assert.equal(firstNotification.response.status, 200);
+
+  const ordersFile = path.join(tempDirectory, 'orders.json');
+  const usersFile = path.join(tempDirectory, 'users.json');
+  const productsFile = path.join(tempDirectory, 'products.json');
+  const orders = JSON.parse(await fs.readFile(ordersFile, 'utf8'));
+  const users = JSON.parse(await fs.readFile(usersFile, 'utf8'));
+  const products = JSON.parse(await fs.readFile(productsFile, 'utf8'));
+  const storedOrder = orders.find((entry) => entry.id === order.data.order.id);
+  const storedUser = users.find((entry) => entry.email === 'retry-buyer@example.test');
+  const storedProduct = products.find((entry) => entry.id === product.id);
+  const productIndex = products.indexOf(storedProduct);
+  assert.equal(storedOrder.paymentStatus, 'paid');
+  assert.equal(storedProduct.stock, 3);
+  assert.ok(storedProduct.stockDeductionOrderIds.includes(storedOrder.id));
+
+  // Simulate a crash after payment was recorded but before stock and access were synchronized.
+  orders[orders.indexOf(storedOrder)] = { ...storedOrder, stockDeducted: false };
+  products[productIndex] = { ...storedProduct, stock: 5 };
+  delete products[productIndex].stockDeductionOrderIds;
+  users[users.indexOf(storedUser)] = { ...storedUser, productEntitlements: [] };
+  await fs.writeFile(ordersFile, JSON.stringify(orders));
+  await fs.writeFile(productsFile, JSON.stringify(products));
+  await fs.writeFile(usersFile, JSON.stringify(users));
+
+  const repairedNotification = await request('/api/payments/notify', { method: 'POST', body: callback });
+  assert.equal(repairedNotification.response.status, 200);
+  let repairedProducts = JSON.parse(await fs.readFile(productsFile, 'utf8'));
+  let repairedProduct = repairedProducts.find((entry) => entry.id === product.id);
+  assert.equal(repairedProduct.stock, 3);
+  assert.ok(repairedProduct.stockDeductionOrderIds.includes(order.data.order.id));
+  const resellerCatalog = await request('/api/products', { cookie: buyerCookie });
+  assert.equal(resellerCatalog.data.products.find((entry) => entry.id === product.id).priceContext, 'reseller');
+
+  const adminCatalog = await request('/api/admin/products', { cookie: adminCookie });
+  const visibleAdminProduct = adminCatalog.data.products.find((entry) => entry.id === product.id);
+  assert.equal('stockDeductionOrderIds' in visibleAdminProduct, false);
+  const update = await request(`/api/admin/products/${product.id}`, {
+    method: 'PUT', cookie: adminCookie, body: { product: { ...product, stock: 3 } },
+  });
+  assert.equal(update.response.status, 200);
+  assert.equal('stockDeductionOrderIds' in update.data.product, false);
+
+  const duplicateNotification = await request('/api/payments/notify', { method: 'POST', body: callback });
+  assert.equal(duplicateNotification.response.status, 200);
+  repairedProducts = JSON.parse(await fs.readFile(productsFile, 'utf8'));
+  repairedProduct = repairedProducts.find((entry) => entry.id === product.id);
+  assert.equal(repairedProduct.stock, 3);
+});
+
 test('admin CMS changes persist and image uploads validate content', async () => {
   const initial = await request('/api/admin/storefront', { cookie: adminCookie });
   assert.equal(initial.response.status, 200);

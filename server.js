@@ -505,7 +505,7 @@ function userCanResell(user, productId) {
 }
 
 function publicProduct(product, user) {
-  const { resellerPrice, bulkMinimum, rating, sold: seededSales, ...retailProduct } = product;
+  const { resellerPrice, bulkMinimum, rating, sold: seededSales, stockDeductionOrderIds, ...retailProduct } = product;
   const actualSales = readOrders().reduce((sum, order) => {
     if (order.paymentStatus !== 'paid' || order.status === 'refunded' || order.kind !== 'products') return sum;
     return sum + order.items.reduce((count, item) => count + (item.productId === product.id ? item.quantity : 0), 0);
@@ -518,6 +518,11 @@ function publicProduct(product, user) {
   }
   if (resellerPrice !== null && resellerPrice !== undefined && Number.isSafeInteger(Number(bulkMinimum)) && Number(bulkMinimum) >= 2) retailProduct.bulkUnlockQuantity = Number(bulkMinimum);
   return { ...retailProduct, priceContext: 'retail' };
+}
+
+function adminProduct(product) {
+  const { stockDeductionOrderIds, ...visible } = product;
+  return { ...visible, stockAvailable: availableProductStock(product) };
 }
 
 function resolveSpecifications(product, selection) {
@@ -646,6 +651,7 @@ function normalizeProduct(input, id, products) {
     bulkMinimum: input.resellerPrice === '' || input.resellerPrice === null || input.resellerPrice === undefined ? null : Number(input.bulkMinimum),
     specifications: Array.isArray(input.specifications) ? input.specifications : [],
   };
+  delete product.stockDeductionOrderIds;
   const error = validateProduct(product, id, products);
   return error ? { error } : { product };
 }
@@ -746,8 +752,18 @@ function syncResellerAccess(order, orders) {
   const userIndex = users.findIndex((entry) => entry.id === order.userId);
   if (userIndex < 0) return;
   const user = users[userIndex];
-  if (order.kind === 'reseller-plan') users[userIndex] = { ...user, resellerPlan: { active: true, orderId: order.id, purchasedAt: order.paidAt } };
-  else users[userIndex] = { ...user, productEntitlements: resellerEntitlementsFor(user, orders, readProducts()) };
+  const activePlan = orders
+    .filter((entry) => entry.userId === user.id && entry.kind === 'reseller-plan' && entry.paymentStatus === 'paid' && entry.status !== 'refunded')
+    .sort((first, second) => Date.parse(second.paidAt || second.createdAt) - Date.parse(first.paidAt || first.createdAt))[0];
+  const resellerPlan = activePlan
+    ? { active: true, orderId: activePlan.id, purchasedAt: activePlan.paidAt || activePlan.createdAt }
+    : { active: false };
+  const productEntitlements = resellerEntitlementsFor(user, orders, readProducts());
+  const samePlan = Boolean(user.resellerPlan?.active) === resellerPlan.active
+    && (user.resellerPlan?.orderId || '') === (resellerPlan.orderId || '')
+    && (user.resellerPlan?.purchasedAt || '') === (resellerPlan.purchasedAt || '');
+  if (samePlan && JSON.stringify(user.productEntitlements || []) === JSON.stringify(productEntitlements)) return;
+  users[userIndex] = { ...user, resellerPlan, productEntitlements };
   saveUsers(users);
 }
 
@@ -904,24 +920,30 @@ function savePaidOrder(order, provider, reference) {
   const result = markOrderPaid(orders[index], provider, reference);
   if (result.error) return result;
   if (result.changed) {
-    let paidOrder = result.order;
-    if (paidOrder.kind === 'products') {
-      const products = readProducts();
-      for (const item of paidOrder.items || []) {
-        const product = products.find((entry) => entry.id === item.productId);
-        if (product && product.stock !== null && product.stock !== undefined && product.stock !== '') {
-          product.stock = Math.max(0, Number(product.stock) - Number(item.quantity || 0));
-        }
-      }
-      saveProducts(products);
-      paidOrder = { ...paidOrder, stockDeducted: true };
-    }
-    orders[index] = paidOrder;
-    result.order = paidOrder;
+    orders[index] = result.order;
     saveOrders(orders);
-    syncResellerAccess(result.order, orders);
     saveAudit({ actor: provider, action: 'payment_verified', orderId: result.order.id, amount: result.order.total, transactionReference: reference });
   }
+  if (orders[index].kind === 'products' && orders[index].stockDeducted !== true) {
+    const quantities = new Map();
+    for (const item of orders[index].items || []) quantities.set(item.productId, (quantities.get(item.productId) || 0) + Number(item.quantity || 0));
+    const products = readProducts();
+    let productsChanged = false;
+    for (const [productId, quantity] of quantities) {
+      const product = products.find((entry) => entry.id === productId);
+      if (!product || product.stock === null || product.stock === undefined || product.stock === '') continue;
+      const appliedOrders = Array.isArray(product.stockDeductionOrderIds) ? product.stockDeductionOrderIds : [];
+      if (appliedOrders.includes(orders[index].id)) continue;
+      product.stock = Math.max(0, Number(product.stock) - quantity);
+      product.stockDeductionOrderIds = [...appliedOrders, orders[index].id];
+      productsChanged = true;
+    }
+    if (productsChanged) saveProducts(products);
+    orders[index] = { ...orders[index], stockDeducted: true };
+    saveOrders(orders);
+    result.order = orders[index];
+  }
+  syncResellerAccess(result.order, orders);
   return result;
 }
 
@@ -955,7 +977,10 @@ function saveConfirmedRefund(order, payment, provider = 'QRIS otomatis') {
   const orders = readOrders();
   const index = orders.findIndex((entry) => entry.id === order.id);
   if (index < 0) return { error: 'Pesanan tidak ditemukan.' };
-  if (orders[index].paymentStatus === 'refunded') return { order: orders[index], changed: false };
+  if (orders[index].paymentStatus === 'refunded') {
+    syncResellerAccess(orders[index], orders);
+    return { order: orders[index], changed: false };
+  }
   if (orders[index].paymentStatus !== 'paid') return { error: 'Hanya pesanan lunas yang dapat dikembalikan.' };
   const updated = {
     ...orders[index],
@@ -1063,7 +1088,7 @@ async function handleApi(req, res, url) {
   if (req.method === 'GET' && url.pathname === '/api/admin/products') {
     const session = activeSession(req);
     if (!session) return json(res, adminAuthStatus(req), { error: 'Masuk sebagai admin untuk melanjutkan.' });
-    return json(res, 200, { products: readProducts().map((product) => ({ ...product, stockAvailable: availableProductStock(product) })) });
+    return json(res, 200, { products: readProducts().map(adminProduct) });
   }
   if (req.method === 'GET' && url.pathname === '/api/admin/storefront') {
     if (!activeSession(req)) return json(res, adminAuthStatus(req), { error: 'Masuk sebagai admin untuk melanjutkan.' });
@@ -1377,7 +1402,7 @@ async function handleApi(req, res, url) {
       saveProducts(products.map((product) => selected.has(product.id) ? { ...product, archived } : product));
     }
     saveAudit({ actor: admin.email, action: `products_bulk_${action}`, productIds: changedIds, blockedProductIds: blocked.map((item) => item.id) });
-    return json(res, 200, { changedIds, blocked, products: readProducts() });
+    return json(res, 200, { changedIds, blocked, products: readProducts().map(adminProduct) });
   }
 
   if (req.method === 'GET' && url.pathname === '/api/admin/storefront') {
@@ -1434,11 +1459,11 @@ async function handleApi(req, res, url) {
     const body = await readBody(req);
     const normalized = normalizeProduct(body.product, updateMatch[1], products);
     if (normalized.error) return json(res, 400, { error: normalized.error });
-    const updated = normalized.product;
+    const updated = { ...normalized.product, stockDeductionOrderIds: products[index].stockDeductionOrderIds || [] };
     products[index] = updated;
     saveProducts(products);
     saveAudit({ actor: admin.email, action: 'product_updated', productId: updateMatch[1] });
-    return json(res, 200, { product: updated });
+    return json(res, 200, { product: adminProduct(updated) });
   }
 
   return json(res, 404, { error: 'Endpoint tidak ditemukan.' });
