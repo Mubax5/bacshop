@@ -288,6 +288,10 @@ test('production configuration starts with HTTPS origin, secure admin setup, and
     assert.equal(session.status, 200);
     assert.equal((await session.json()).authenticated, true);
     assert.doesNotMatch(output, new RegExp(setupCode));
+    for (const directory of [dataDirectory, path.dirname(productFile), uploadDirectory]) {
+      const files = await fs.readdir(directory);
+      assert.equal(files.some((name) => name.startsWith('.bacshop-write-check-')), false);
+    }
   } finally {
     if (child.exitCode === null && child.signalCode === null) {
       child.kill('SIGINT');

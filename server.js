@@ -85,6 +85,28 @@ validateProductionConfiguration();
 fs.mkdirSync(PRIVATE_DIR, { recursive: true, mode: 0o700 });
 fs.mkdirSync(path.dirname(PRODUCTS_FILE), { recursive: true });
 fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+if (NODE_ENV === 'production' && process.platform !== 'win32') {
+  try { fs.chmodSync(PRIVATE_DIR, 0o700); } catch { throw new Error('Akses folder data pribadi production tidak dapat dibatasi.'); }
+}
+function verifyWritableDirectory(directory, label) {
+  const probe = path.join(directory, `.bacshop-write-check-${crypto.randomBytes(8).toString('hex')}.tmp`);
+  const renamed = `${probe}.renamed`;
+  try {
+    fs.writeFileSync(probe, 'ok', { flag: 'wx', mode: 0o600 });
+    fs.renameSync(probe, renamed);
+    fs.unlinkSync(renamed);
+  } catch {
+    for (const candidate of [probe, renamed]) {
+      try { fs.unlinkSync(candidate); } catch { /* Cleanup is best effort after a failed storage probe. */ }
+    }
+    throw new Error(`Lokasi penyimpanan ${label} tidak dapat ditulis dengan aman.`);
+  }
+}
+if (NODE_ENV === 'production') {
+  verifyWritableDirectory(PRIVATE_DIR, 'data pribadi');
+  verifyWritableDirectory(path.dirname(PRODUCTS_FILE), 'katalog');
+  verifyWritableDirectory(UPLOAD_DIR, 'unggahan');
+}
 if (!fs.existsSync(PRODUCTS_FILE)) throw new Error('Missing data/products.json');
 if (!Array.isArray(readJson(PRODUCTS_FILE, null))) throw new Error('Data produk harus berupa daftar JSON yang valid.');
 

@@ -4,7 +4,7 @@ Ini adalah repo kanonis Bacshop dengan storefront Node.js yang memakai `server.j
 
 ## Menjalankan aplikasi
 
-Gunakan Node.js 18 atau lebih baru. Jalankan `npm install`, lalu `npm start` dari folder ini. Server lokal mendengarkan di `127.0.0.1:4173` secara default; port dapat diganti melalui `PORT`. Saat pertama dijalankan, server menampilkan kode setup admin sekali pakai. Buka `/#/admin`, masukkan kode tersebut, lalu buat email dan kata sandi admin. Kode kedaluwarsa saat server berhenti.
+Gunakan Node.js 22 atau 24 LTS. Jalankan `npm install`, lalu `npm start` dari folder ini. Server lokal mendengarkan di `127.0.0.1:4173` secara default; port dapat diganti melalui `PORT`. Saat pertama dijalankan, server menampilkan kode setup admin sekali pakai. Buka `/#/admin`, masukkan kode tersebut, lalu buat email dan kata sandi admin. Kode kedaluwarsa saat server berhenti.
 
 Data akun, sesi, pesanan, konten toko, dan audit admin disimpan di `.bacshop-private/`, yang tidak dilayani sebagai aset publik. Produk tersimpan di `data/products.json`; gambar unggahan disimpan di `assets/uploads/` dan divalidasi sebagai gambar sebelum diterima.
 
@@ -74,7 +74,7 @@ Salin `data/products.json` ke `BACSHOP_PRODUCTS_FILE` saat menyiapkan server per
 
 Jika memakai reverse proxy, set `BACSHOP_TRUSTED_PROXY_IPS` hanya ke alamat proxy yang benar-benar tersambung ke Node, dan pastikan proxy menghapus lalu menulis ulang `X-Forwarded-For`. Header tersebut hanya dipakai untuk pembatasan percobaan login; tanpa proxy yang dipercaya, aplikasi mengabaikannya.
 
-Setelah konfigurasi benar, jalankan `npm start`. Startup production gagal dengan pesan yang tidak memuat rahasia jika origin HTTPS, folder persistent, atau kunci Midtrans Production belum disiapkan. `GET /api/health` memberi status hidup dan apakah kunci pembayaran terkonfigurasi; status itu tidak membuktikan QRIS aktif di akun Midtrans. Daftarkan `https://shop.domain-anda.id/api/payments/notify` sebagai HTTP notification URL Production pada dashboard Midtrans.
+Setelah konfigurasi benar, jalankan `npm start`. Startup production gagal dengan pesan yang tidak memuat rahasia jika origin HTTPS, folder persistent yang bisa ditulis, atau kunci Midtrans Production belum disiapkan. Folder data pribadi dibatasi ke akun proses di sistem Unix. `GET /api/health` memberi status hidup dan apakah kunci pembayaran terkonfigurasi; status itu tidak membuktikan QRIS aktif di akun Midtrans. Daftarkan `https://shop.domain-anda.id/api/payments/notify` sebagai HTTP notification URL Production pada dashboard Midtrans.
 
 Sebelum menerima pembeli, jalankan `npm test`, lalu cek login admin, pendaftaran buyer, pesanan, QRIS, callback, dan pemenuhan. QRIS dibuat setelah pesanan dikonfirmasi; status lunas hanya berubah setelah respons status/callback Midtrans cocok pada ID merchant, mata uang, nominal, metode QRIS, dan fraud status.
 

@@ -3,6 +3,9 @@
     "start": "node server.js",
     "test": "node --test"
   },
+  "engines": {
+    "node": "^22.0.0 || ^24.0.0"
+  },
   "dependencies": {
     "qrcode": "^1.5.4"
   }
