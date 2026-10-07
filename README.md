@@ -92,7 +92,19 @@ Jika memakai reverse proxy, set `BACSHOP_TRUSTED_PROXY_IPS` hanya ke alamat prox
 
 Setelah konfigurasi benar, jalankan `npm start`. Startup production gagal dengan pesan yang tidak memuat rahasia jika origin HTTPS, folder persistent yang bisa ditulis, atau kunci Midtrans Production belum disiapkan. Folder data pribadi dibatasi ke akun proses di sistem Unix. `GET /api/health` memberi status hidup dan apakah kunci pembayaran terkonfigurasi; status itu tidak membuktikan QRIS aktif di akun Midtrans. Daftarkan `https://shop.domain-anda.id/api/payments/notify` sebagai HTTP notification URL Production pada dashboard Midtrans.
 
-## Azure App Service gratis (pilot sementara)
+## Azure App Service
+
+Deployment Bacshop menggunakan App Service Linux Basic B1, Node.js 24 LTS, satu instance, dan Always On. B1 memakai compute berbayar; kredit Azure for Students akan berkurang sesuai pemakaian. Pilih region yang diizinkan oleh policy subscription pemilik. Domain utama adalah `https://bacshop.id`, dengan DNS dikelola di IDwebhost dan sertifikat App Service Managed Certificate.
+
+Untuk deployment ZIP dari source, set `SCM_DO_BUILD_DURING_DEPLOYMENT=true` dan `ENABLE_ORYX_BUILD=true` sebelum deployment agar dependensi dari `package-lock.json` terpasang. Gunakan ZIP dari `git archive HEAD` untuk mengecualikan `.env`, data privat, dan unggahan. Pastikan `/api/health` dan katalog merespons setelah deployment; status build berhasil saja tidak menjamin proses aplikasi berhasil berjalan.
+
+Alternatif jika build Azure tertahan: jalankan `npm ci --omit=dev`, buat ZIP dari `git archive HEAD`, lalu tambahkan hanya `node_modules/` ke ZIP tersebut. Set kedua flag build di atas ke `false` untuk paket yang sudah berisi dependensi produksi. Dependensi saat ini berupa JavaScript; jika menambahkan modul native, paket harus dibangun pada Linux yang sesuai dengan runtime Azure. Jangan mengubah app settings selama deployment masih membangun aplikasi.
+
+Untuk domain apex, buat A record `@` menuju inbound IP App Service serta TXT `asuid` berisi custom domain verification ID. Pada IDwebhost, opsi `SPF (txt)` tersimpan sebagai TXT. Setelah DNS publik terverifikasi, tambahkan hostname `bacshop.id`, terbitkan managed certificate, dan pasang SNI SSL. Aktifkan HTTPS Only dan minimum TLS 1.2, lalu set `BACSHOP_PUBLIC_ORIGIN=https://bacshop.id` agar permintaan akun dan pesanan dari domain tersebut diterima. HTTP notification URL Midtrans adalah `https://bacshop.id/api/payments/notify`.
+
+Sebelum migrasi akun Azure, cadangkan seluruh `/home/bacshop-data/` melalui Kudu ZIP API dan pulihkan ke lokasi yang sama pada app tujuan sebelum menjalankan aplikasi. Cadangan berisi data privat; simpan di lokasi yang diabaikan Git dan jangan masukkan ke ZIP source. Verifikasi hasil pemulihan sebelum menghapus resource Bacshop lama.
+
+### Free F1 untuk pilot sementara
 
 Untuk pilot sementara tanpa biaya compute, aplikasi dapat dijalankan di Azure App Service Linux Free F1 menggunakan Node.js 24 LTS dan hostname HTTPS bawaan `*.azurewebsites.net`. Paket F1 memiliki batas CPU dan penyimpanan yang ketat serta tidak memiliki SLA; paket gratis/shared ditujukan untuk pengembangan dan pengujian, bukan toko live. Jangan menerima pesanan live sebelum hosting, backup, kapasitas, dan kanal pembayaran Production siap.
 
