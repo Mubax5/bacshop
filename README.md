@@ -120,6 +120,24 @@ Core API Production dan QRIS dinamis harus aktif pada akun merchant Production. 
 
 Konten penjualan tidak mengarang ulasan, jumlah penjualan, atau pesanan. Informasi yang belum dikonfigurasi ditampilkan sebagai belum tersedia, bukan sebagai transaksi nyata.
 
+## Login Google dan gambar auth
+
+Halaman masuk dan daftar menyediakan login Google melalui authorization code flow dengan state yang terikat cookie, nonce, dan PKCE. Server memverifikasi signature, issuer, audience, masa berlaku ID token, nonce, dan email terverifikasi melalui `google-auth-library`. Token Google tidak disimpan atau dikirim ke frontend. Akun Google memakai sesi buyer biasa; akses reseller dan pesanan tetap mengikuti akun yang sama.
+
+Di Google Auth Platform, buat OAuth client bertipe **Web application** untuk project Bacshop:
+
+- Authorized JavaScript origin: `https://bacshop.id`.
+- Authorized redirect URI: `https://bacshop.id/api/auth/google/callback`.
+- Isi `GOOGLE_CLIENT_ID` dan `GOOGLE_CLIENT_SECRET` pada environment server Azure. Client Secret tidak boleh masuk Git atau CMS.
+- Gunakan scope `openid email profile` saja. Periksa Audience dan publishing status; aplikasi yang masih Testing belum tersedia untuk seluruh pengguna. Isi branding, domain, dan tautan kebijakan privasi/ketentuan sesuai bisnis pemilik.
+- Untuk pengembangan lokal, daftarkan origin `http://127.0.0.1:4173` dan redirect `http://127.0.0.1:4173/api/auth/google/callback` pada client pengembangan, lalu sesuaikan environment lokal. Jangan memakai callback produksi untuk server lokal.
+
+`GET /api/auth/options` hanya mengembalikan ketersediaan login Google, tanpa kunci. Jika konfigurasi belum lengkap, tombol Google dinonaktifkan dan login email tetap tersedia. Google ID (`sub`) menjadi identitas stabil. Akun email yang sudah ada hanya disambungkan otomatis bila Google berwenang atas email itu (Gmail atau Google Workspace dengan email terverifikasi); email pihak ketiga yang sudah terdaftar tetap memerlukan login Bacshop. Foto Google disalin ke folder unggahan lokal jika format dan hostnya valid; foto yang sudah dipilih pengguna dipertahankan.
+
+**Admin → Konten toko → Gambar auth** (`#/admin/toko/auth`) mengelola gambar panel kanan halaman masuk/daftar. Ukuran disarankan **1440 × 1800 px, rasio 4:5**, PNG/JPEG/WebP maksimal 5 MB. Gambar menyesuaikan panel dengan `object-fit: cover`, jadi letakkan isi penting di tengah. Panel gambar disembunyikan pada layar sampai 760 px. Tombol **Kembalikan placeholder** mengosongkan gambar setelah formulir disimpan. Data CMS dan file gambar memakai penyimpanan persistent yang sama dengan konten toko lainnya.
+
+Logo Google resmi berasal dari [aset branding Google](https://developers.google.com/identity/branding-guidelines), dengan font Google Sans lokal berlisensi SIL OFL pada `assets/GOOGLE-SANS-OFL.txt`. Logo Bacshop tetap di pojok kanan atas pada halaman auth.
+
 ## Referensi dan aset
 
 Tokopedia hanya menjadi referensi visual dan struktural. Tidak ada skrip atau layanan Tokopedia yang dimuat aplikasi. Aset font Plus Jakarta Sans dan Feather disimpan lokal beserta lisensinya.

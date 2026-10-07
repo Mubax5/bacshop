@@ -6,6 +6,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const net = require('node:net');
 const QRCode = require('qrcode');
+const { OAuth2Client } = require('google-auth-library');
 
 function loadEnvFile(file = path.join(__dirname, '.env')) {
   let contents;
@@ -120,6 +121,11 @@ const loginAttempts = new Map();
 const userLoginAttempts = new Map();
 const paymentCreationLocks = new Set();
 const paymentRefundLocks = new Set();
+const googleSignIns = new Map();
+const googleLoginAttempts = new Map();
+const GOOGLE_COOKIE = 'bacshop_google_oauth';
+const GOOGLE_CALLBACK = '/api/auth/google/callback';
+const GOOGLE_SIGN_IN_MS = 10 * 60 * 1000;
 if (setupCode && NODE_ENV !== 'production') {
   console.log('\nBacshop admin first setup');
   console.log(`Open http://${HOST}:${PORT}/#/admin and enter this one-time code:`);
@@ -175,6 +181,7 @@ function defaultStorefront() {
     promotions: [],
     resellerPlan: { price: 149000, terms: 'Akses harga reseller berlaku permanen untuk seluruh produk setelah pembayaran diverifikasi.' },
     payment: { provider: 'QRIS' },
+    authVisual: { image: '', alt: 'Gambar halaman masuk Bacshop' },
   };
 }
 
@@ -182,7 +189,7 @@ function readStorefront() {
   const stored = readJson(CMS_FILE, null);
   const defaults = defaultStorefront();
   return stored && typeof stored === 'object'
-    ? { ...defaults, ...stored, payment: { ...defaults.payment, available: Boolean(midtransConfig()) } }
+    ? { ...defaults, ...stored, authVisual: { ...defaults.authVisual, ...stored.authVisual }, payment: { ...defaults.payment, available: Boolean(midtransConfig()) } }
     : { ...defaults, payment: { ...defaults.payment, available: Boolean(midtransConfig()) } };
 }
 
@@ -469,7 +476,7 @@ function hashPassword(password, salt = crypto.randomBytes(16).toString('hex')) {
 }
 
 function passwordMatchesRecord(password, record) {
-  if (!record || typeof password !== 'string') return false;
+  if (!record || typeof password !== 'string' || typeof record.salt !== 'string' || !/^[a-f0-9]{128}$/i.test(record.hash || '')) return false;
   const candidate = hashPassword(password, record.salt).hash;
   return crypto.timingSafeEqual(Buffer.from(candidate, 'hex'), Buffer.from(record.hash, 'hex'));
 }
@@ -684,6 +691,10 @@ function safeAssetPath(value) {
 
 function validateStorefrontUpdate(input) {
   if (!input || typeof input !== 'object') return 'Data toko tidak valid.';
+  if (input.authVisual !== undefined) {
+    const visual = input.authVisual;
+    if (!visual || typeof visual !== 'object' || Array.isArray(visual) || typeof visual.image !== 'string' || (visual.image && !safeAssetPath(visual.image)) || typeof visual.alt !== 'string' || !visual.alt.trim() || visual.alt.length > 160) return 'Pilih gambar auth dari unggahan toko dan isi keterangannya (maks. 160 karakter).';
+  }
   if (Array.isArray(input.categories)) {
     if (input.categories.length > 20) return 'Jumlah kategori maksimal 20.';
     const slugs = new Set();
@@ -1004,7 +1015,129 @@ function saveConfirmedRefund(order, payment, provider = 'QRIS otomatis') {
   return { order: updated, changed: true };
 }
 
+function googleAuthConfig() {
+  const clientId = (process.env.GOOGLE_CLIENT_ID || '').trim();
+  const clientSecret = (process.env.GOOGLE_CLIENT_SECRET || '').trim();
+  if (!clientId.endsWith('.apps.googleusercontent.com') || !clientSecret) return null;
+  return { clientId, clientSecret, redirectUri: `${PUBLIC_ORIGIN}${GOOGLE_CALLBACK}` };
+}
+
+function safeAuthNext(value) {
+  return typeof value === 'string' && value.length <= 1000 && /^\/(?!\/|admin(?:\/|$))[a-z0-9/?=&%._+-]*$/i.test(value) ? value : '/akun';
+}
+
+function googleCookie(req) {
+  return (req.headers.cookie || '').split(';').map(part => part.trim()).find(part => part.startsWith(`${GOOGLE_COOKIE}=`))?.slice(GOOGLE_COOKIE.length + 1) || '';
+}
+
+function appendGoogleCookie(res, value, maxAge) {
+  const current = res.getHeader('Set-Cookie');
+  res.setHeader('Set-Cookie', [...(Array.isArray(current) ? current : current ? [current] : []), `${GOOGLE_COOKIE}=${value}; Path=/api/auth/google; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${COOKIE_SECURE ? '; Secure' : ''}`]);
+}
+
+function authRedirect(res, location) {
+  res.writeHead(303, { ...standardSecurityHeaders(), 'Cache-Control': 'no-store', Location: location });
+  res.end();
+}
+
+function startGoogleSignIn(req, res, url) {
+  if (req.headers['sec-fetch-site'] === 'cross-site') return json(res, 403, { error: 'Mulai login Google dari halaman masuk Bacshop.' });
+  const config = googleAuthConfig();
+  if (!config) return authRedirect(res, `${PUBLIC_ORIGIN}/#/masuk?google_error=unavailable`);
+  if (limitedLogin(req, googleLoginAttempts)) return authRedirect(res, `${PUBLIC_ORIGIN}/#/masuk?google_error=limited`);
+  failedLogin(req, googleLoginAttempts);
+  for (const [key, value] of googleSignIns) if (value.expires < Date.now()) googleSignIns.delete(key);
+  if (googleSignIns.size >= 1000) return authRedirect(res, `${PUBLIC_ORIGIN}/#/masuk?google_error=busy`);
+  const state = crypto.randomBytes(32).toString('base64url');
+  const cookie = crypto.randomBytes(32).toString('base64url');
+  const nonce = crypto.randomBytes(32).toString('base64url');
+  const verifier = crypto.randomBytes(32).toString('base64url');
+  googleSignIns.set(state, { cookie, nonce, verifier, next: safeAuthNext(url.searchParams.get('next')), expires: Date.now() + GOOGLE_SIGN_IN_MS });
+  appendGoogleCookie(res, cookie, GOOGLE_SIGN_IN_MS / 1000);
+  const destination = new URL('https://accounts.google.com/o/oauth2/v2/auth');
+  destination.search = new URLSearchParams({ client_id: config.clientId, redirect_uri: config.redirectUri, response_type: 'code', scope: 'openid email profile', state, nonce, code_challenge: crypto.createHash('sha256').update(verifier).digest('base64url'), code_challenge_method: 'S256', prompt: 'select_account' }).toString();
+  return authRedirect(res, destination.href);
+}
+
+async function googleAvatar(picture) {
+  try {
+    const url = new URL(picture);
+    if (url.protocol !== 'https:' || url.username || url.password || url.port || !/^lh[0-9]+\.googleusercontent\.com$/.test(url.hostname)) return '';
+    const response = await fetch(url, { redirect: 'error', signal: AbortSignal.timeout(5000) });
+    const mime = (response.headers.get('content-type') || '').split(';')[0].toLowerCase();
+    if (!response.ok || !['image/png', 'image/jpeg', 'image/webp'].includes(mime) || Number(response.headers.get('content-length')) > 5 * 1024 * 1024) return '';
+    const chunks = [];
+    let size = 0;
+    for await (const chunk of response.body) {
+      size += chunk.length;
+      if (size > 5 * 1024 * 1024) return '';
+      chunks.push(chunk);
+    }
+    const bytes = Buffer.concat(chunks);
+    if (!uploadedImage(bytes, mime)) return '';
+    const filename = `google-${crypto.randomUUID()}.${mime === 'image/jpeg' ? 'jpg' : mime.split('/')[1]}`;
+    fs.writeFileSync(path.join(UPLOAD_DIR, filename), bytes, { mode: 0o600 });
+    return `/assets/uploads/${filename}`;
+  } catch { return ''; }
+}
+
+async function finishGoogleSignIn(req, res, url) {
+  const state = url.searchParams.get('state') || '';
+  const pending = googleSignIns.get(state);
+  const cookie = googleCookie(req);
+  if (!pending || pending.expires < Date.now() || !/^[A-Za-z0-9_-]{43}$/.test(cookie) || !crypto.timingSafeEqual(Buffer.from(cookie), Buffer.from(pending.cookie))) {
+    appendGoogleCookie(res, '', 0);
+    return authRedirect(res, `${PUBLIC_ORIGIN}/#/masuk?google_error=expired`);
+  }
+  googleSignIns.delete(state);
+  const fail = code => { appendGoogleCookie(res, '', 0); return authRedirect(res, `${PUBLIC_ORIGIN}/#/masuk?google_error=${code}&next=${encodeURIComponent(pending.next)}`); };
+  if (url.searchParams.has('error')) return fail('cancelled');
+  const code = url.searchParams.get('code');
+  const config = googleAuthConfig();
+  if (!config || !code || code.length > 4096) return fail('failed');
+  try {
+    const response = await fetch('https://oauth2.googleapis.com/token', {
+      method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ code, client_id: config.clientId, client_secret: config.clientSecret, redirect_uri: config.redirectUri, grant_type: 'authorization_code', code_verifier: pending.verifier }), signal: AbortSignal.timeout(8000),
+    });
+    if (!response.ok) return fail('failed');
+    const tokens = await response.json();
+    if (typeof tokens.id_token !== 'string') return fail('failed');
+    const client = new OAuth2Client(config.clientId);
+    const ticket = await client.verifyIdToken({ idToken: tokens.id_token, audience: config.clientId });
+    const profile = ticket.getPayload();
+    if (!profile || profile.nonce !== pending.nonce || !profile.sub || profile.email_verified !== true || !validEmail(profile.email)) return fail('failed');
+    const email = profile.email.toLowerCase();
+    let users = readUsers();
+    let user = users.find(entry => entry.googleSub === profile.sub);
+    if (!user) {
+      user = users.find(entry => entry.email === email);
+      if (user && (user.googleSub || (!email.endsWith('@gmail.com') && !profile.hd))) return fail('link_required');
+    }
+    const avatarUrl = user?.avatarUrl || await googleAvatar(profile.picture);
+    // Re-read after the avatar fetch to preserve concurrent profile and reseller updates.
+    users = readUsers();
+    const existing = users.find(entry => entry.googleSub === profile.sub) || users.find(entry => entry.email === email);
+    if (existing && existing.googleSub && existing.googleSub !== profile.sub) return fail('link_required');
+    if (existing && !existing.googleSub && !email.endsWith('@gmail.com') && !profile.hd) return fail('link_required');
+    user = existing ? { ...existing, googleSub: profile.sub, avatarUrl: existing.avatarUrl || avatarUrl } : {
+      id: crypto.randomUUID(), name: String(profile.name || email.split('@')[0]).trim().slice(0, 80) || 'Pengguna Google', email,
+      googleSub: profile.sub, avatarUrl, productEntitlements: [], resellerPlan: { active: false }, createdAt: new Date().toISOString(),
+    };
+    if (existing) users[users.findIndex(entry => entry.id === existing.id)] = user;
+    else users.push(user);
+    saveUsers(users);
+    setUserSession(res, user.id);
+    appendGoogleCookie(res, '', 0);
+    googleLoginAttempts.delete(clientAddress(req));
+    return authRedirect(res, `${PUBLIC_ORIGIN}/#${pending.next}`);
+  } catch { return fail('failed'); }
+}
+
 async function handleApi(req, res, url) {
+  if (req.method === 'GET' && url.pathname === '/api/auth/google/start') return startGoogleSignIn(req, res, url);
+  if (req.method === 'GET' && url.pathname === GOOGLE_CALLBACK) return finishGoogleSignIn(req, res, url);
+  if (req.method === 'GET' && url.pathname === '/api/auth/options') return json(res, 200, { googleAvailable: Boolean(googleAuthConfig()) });
   if (req.method === 'POST' && url.pathname === MIDTRANS_NOTIFY_PATH) return handleMidtransNotify(req, res);
   if (['POST', 'PUT', 'DELETE'].includes(req.method) && !sameOrigin(req)) return json(res, 403, { error: 'Permintaan hanya dapat dimulai dari situs Bacshop.' });
   if (req.method === 'GET' && url.pathname === '/api/health') return json(res, 200, { status: 'ok', paymentConfigured: Boolean(midtransConfig()) });

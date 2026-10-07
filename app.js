@@ -76,6 +76,7 @@
   const app = document.querySelector('#app');
   let STOREFRONT = { categories: CATEGORIES, banners: [], promotions: [], resellerPlan: { price: 149000, terms: '' }, payment: { provider: 'QRIS' } };
   let currentUser = null;
+  let AUTH_OPTIONS = { googleAvailable: false };
   let adminPreviewMode = (() => {
     try { return sessionStorage.getItem('bacshop.admin.preview') === 'true'; }
     catch { return false; }
@@ -704,7 +705,11 @@
     const next = params.get('next') || '';
     const safeNext = next.startsWith('/') && !next.startsWith('//') && !next.startsWith('/admin') ? next : '';
     const title = register ? 'Buat akun Bacshop' : 'Masuk ke Bacshop';
-    return `<section class="auth-layout"><div class="auth-page"><div class="auth-card"><div class="auth-heading"><h1>${title}</h1><p>${register ? 'Buat akun untuk mulai belanja.' : 'Masuk untuk lanjut belanja.'}</p></div><form class="customer-auth-form" data-customer-auth="${register ? 'register' : 'login'}"><input type="hidden" name="next" value="${escapeHtml(safeNext)}" />${register ? `<label>Nama lengkap<input name="name" type="text" autocomplete="name" minlength="2" maxlength="80" required /></label>` : ''}<label>Email<input name="email" type="email" autocomplete="email" required /></label><label>Kata sandi<span class="auth-password-field"><input name="password" type="password" autocomplete="${register ? 'new-password' : 'current-password'}" minlength="10" required /><button class="auth-password-toggle" type="button" data-password-toggle aria-label="Tampilkan kata sandi" aria-pressed="false">${feather('eye')}</button></span></label><p class="form-message" data-auth-message role="status" aria-live="polite"></p><button class="button button-primary" type="submit">${register ? 'Buat akun' : 'Masuk'}</button></form><p class="auth-switch">${register ? 'Sudah punya akun?' : 'Belum punya akun?'} <a href="#/${register ? 'masuk' : 'daftar'}${safeNext ? `?next=${encodeURIComponent(safeNext)}` : ''}">${register ? 'Masuk' : 'Daftar'}</a></p><p class="auth-legal-links">Dengan melanjutkan, kamu menyetujui <a href="#/ketentuan-layanan">Ketentuan layanan</a> dan <a href="#/privasi">Kebijakan privasi</a>.</p></div></div><aside class="auth-story" aria-label="Tentang Bacshop"><div class="auth-story-copy"><span class="auth-story-kicker">BELANJA DIGITAL</span><h2>Pilih produk, bayar, lalu pantau pesananmu di satu tempat.</h2><p>Informasi produk, pembayaran, dan status pesanan tersedia dari akun Bacshop.</p><a class="auth-story-link" href="#/kategori/semua">Jelajahi produk ${feather('arrow-right')}</a></div></aside></section>`;
+    const errors = { unavailable: 'Login Google sedang disiapkan. Gunakan email untuk masuk.', limited: 'Terlalu banyak percobaan. Coba lagi setelah 15 menit.', busy: 'Login Google sedang sibuk. Coba lagi sebentar.', expired: 'Sesi login Google berakhir. Silakan coba lagi.', cancelled: 'Login Google dibatalkan. Kamu bisa mencoba lagi.', failed: 'Login Google belum berhasil. Silakan coba lagi.', link_required: 'Email ini sudah memiliki akun Bacshop. Masuk menggunakan kata sandi akun tersebut.' };
+    const googleError = errors[params.get('google_error')] || '';
+    const googleContent = '<img src="/assets/google-logo.png" width="20" height="20" alt="" /><span>Lanjutkan dengan Google</span>';
+    const visual = STOREFRONT.authVisual || {};
+    return `<section class="auth-layout"><div class="auth-page"><div class="auth-card"><div class="auth-heading"><h1>${title}</h1><p>${register ? 'Buat akun untuk mulai belanja.' : 'Masuk untuk lanjut belanja.'}</p></div>${googleError ? `<p class="form-message is-error" role="alert">${escapeHtml(googleError)}</p>` : ''}${AUTH_OPTIONS.googleAvailable ? `<a class="auth-google-button" href="/api/auth/google/start?next=${encodeURIComponent(safeNext || '/akun')}">${googleContent}</a>` : `<button class="auth-google-button" type="button" disabled>${googleContent}</button><p class="auth-google-note">Login Google sedang disiapkan.</p>`}<div class="auth-divider"><span>atau gunakan email</span></div><form class="customer-auth-form" data-customer-auth="${register ? 'register' : 'login'}"><input type="hidden" name="next" value="${escapeHtml(safeNext)}" />${register ? `<label>Nama lengkap<input name="name" type="text" autocomplete="name" minlength="2" maxlength="80" required /></label>` : ''}<label>Email<input name="email" type="email" autocomplete="email" required /></label><label>Kata sandi<span class="auth-password-field"><input name="password" type="password" autocomplete="${register ? 'new-password' : 'current-password'}" minlength="10" required /><button class="auth-password-toggle" type="button" data-password-toggle aria-label="Tampilkan kata sandi" aria-pressed="false">${feather('eye')}</button></span></label><p class="form-message" data-auth-message role="status" aria-live="polite"></p><button class="button button-primary" type="submit">${register ? 'Buat akun' : 'Masuk'}</button></form><p class="auth-switch">${register ? 'Sudah punya akun?' : 'Belum punya akun?'} <a href="#/${register ? 'masuk' : 'daftar'}${safeNext ? `?next=${encodeURIComponent(safeNext)}` : ''}">${register ? 'Masuk' : 'Daftar'}</a></p><p class="auth-legal-links">Dengan melanjutkan, kamu menyetujui <a href="#/ketentuan-layanan">Ketentuan layanan</a> dan <a href="#/privasi">Kebijakan privasi</a>.</p></div></div><aside class="auth-story auth-visual" aria-label="Gambar auth">${visual.image ? `<img class="auth-visual-image" src="${escapeHtml(visual.image)}" alt="${escapeHtml(visual.alt || 'Gambar halaman masuk Bacshop')}" />` : '<div class="auth-visual-placeholder"><span>Gambar auth</span><small>1440 × 1800 px · 4:5</small></div>'}</aside></section>`;
   }
 
   function renderAccountPage() {
@@ -1099,6 +1104,10 @@
   }
 
   function renderAdminCms(storefront, path) {
+    if (path === '/admin/toko/auth') {
+      const visual = storefront.authVisual || {};
+      return `<form class="admin-cms-form" data-storefront-form data-storefront-kind="authVisual"><section class="admin-section"><div class="admin-section-heading"><div><h2>Gambar halaman masuk & daftar</h2><p>Rekomendasi 1440 × 1800 px (4:5). Gambar mengisi panel kanan; letakkan isi penting di tengah. Panel disembunyikan pada layar kecil.</p></div></div><div class="admin-fields">${imageUploadField('Gambar auth', visual.image || '')}<label class="admin-wide">Keterangan gambar<input name="authVisualAlt" value="${escapeHtml(visual.alt || 'Gambar halaman masuk Bacshop')}" required maxlength="160" /></label><button class="button button-small" type="button" data-reset-auth-image>Kembalikan placeholder</button></div></section><p class="admin-form-message" data-cms-message role="status" aria-live="polite"></p><button class="button button-primary" type="submit">Simpan gambar auth</button></form>`;
+    }
     if (path === '/admin/katalog/kategori') {
       return `<form class="admin-cms-form" data-storefront-form data-storefront-kind="categories"><section class="admin-section"><div class="admin-section-heading"><div><h2>Kategori katalog</h2><p>Kategori yang dipakai produk dan navigasi Belanja.</p></div><button class="button button-primary button-small" type="button" data-add-cms-row="category">Tambah kategori</button></div><div class="admin-cms-grid" data-cms-list="category">${storefront.categories.map((item, index) => cmsRow('category', item, index)).join('')}</div></section><p class="admin-form-message" data-cms-message role="status" aria-live="polite"></p><button class="button button-primary" type="submit">Simpan kategori</button></form>`;
     }
@@ -1121,6 +1130,7 @@
       '/admin/produk': 'Produk',
       '/admin/katalog/kategori': 'Kategori',
       '/admin/toko/banner': 'Banner Beranda',
+      '/admin/toko/auth': 'Gambar auth',
       '/admin/toko/promo': 'Promo toko',
       '/admin/toko/reseller': 'Program reseller',
       '/admin/pesanan': 'Pesanan',
@@ -1152,6 +1162,7 @@
         <button class="admin-nav-parent" type="button" data-admin-group-toggle aria-expanded="${!storeHidden}" title="${collapsed ? 'Konten toko' : ''}"><span class="admin-nav-icon">${feather('tag')}</span><span class="admin-nav-label">Konten toko</span>${feather('chevron-right','admin-nav-chevron')}</button>
         <div class="admin-nav-children" data-admin-group-children ${storeHidden ? 'hidden' : ''}>
           ${link('#/admin/toko/banner', 'Banner Beranda', 'grid', path === '/admin/toko/banner', true)}
+          ${link('#/admin/toko/auth', 'Gambar auth', 'image', path === '/admin/toko/auth', true)}
           ${link('#/admin/toko/promo', 'Promo', 'tag', path === '/admin/toko/promo', true)}
           ${link('#/admin/toko/reseller', 'Program reseller', 'user', path === '/admin/toko/reseller', true)}
         </div>
@@ -1188,9 +1199,10 @@
         : `<section class="admin-section"><a class="admin-back-products" href="#/admin/produk">${feather('arrow-left')}<span>Kembali ke produk</span></a><div class="admin-empty-state"><span class="admin-empty-icon">${feather('package')}</span><h1>Produk tidak ditemukan</h1><p>Produk mungkin sudah dihapus. Muat kembali katalog untuk memilih produk lain.</p><a class="button button-primary" href="#/admin/produk">Buka katalog produk</a></div></section>`;
     } else if (path === '/admin/produk') content = `<section class="admin-section admin-catalog-page"><div class="admin-products-heading"><div><span class="admin-eyebrow">KATALOG TOKO</span><h1>Produk</h1><p>Atur katalog, stok, dan harga produk dalam satu tempat.</p></div><span class="admin-product-count"><strong>${productResult.products.length}</strong><small>produk</small></span></div><details class="admin-product-editor admin-create-product"><summary><span class="admin-add-product-icon">${feather('plus')}</span><span class="admin-add-product-copy"><strong>Tambah produk</strong><small>Buat produk baru di katalog.</small></span><span class="admin-create-chevron">${feather('chevron-down')}</span></summary>${productFields({ category: CATEGORIES[0]?.slug, orderMode: 'ready', preOrderConfirmed: true, terms: {}, stock: null }, true)}</details><div class="admin-product-toolbar"><label class="admin-product-search">${feather('search')}<input type="search" placeholder="Cari nama atau ID produk" aria-label="Cari produk" data-admin-product-search /></label><label class="admin-select-all"><input type="checkbox" data-select-all-products /><span>Pilih semua</span></label><div class="admin-product-bulk-actions"><span data-selected-count>0 dipilih</span><button class="button button-small" type="button" data-product-bulk="archive" disabled>Arsipkan</button><button class="button button-small" type="button" data-product-bulk="restore" disabled>Pulihkan</button><button class="button button-small button-danger" type="button" data-product-bulk="delete" disabled>Hapus</button></div></div><div class="admin-product-list" data-admin-product-list>${productResult.products.map((product) => productCard(product, { variant: 'admin' })).join('') || `<div class="admin-empty-state"><span class="admin-empty-icon">${feather('package')}</span><h2>Katalog masih kosong</h2><p>Tambahkan produk pertama agar bisa tampil di toko.</p></div>`}</div></section>`;
     else if (path === '/admin/katalog/kategori') content = `<section class="admin-section"><div class="admin-products-heading"><div><span class="admin-eyebrow">KATALOG TOKO</span><h1>Kategori</h1><p>Atur kelompok produk yang tersedia di Belanja.</p></div></div>${renderAdminCms(storefront, path)}</section>`;
-    else if (['/admin/toko/banner', '/admin/toko/promo', '/admin/toko/reseller'].includes(path)) {
+    else if (['/admin/toko/banner', '/admin/toko/auth', '/admin/toko/promo', '/admin/toko/reseller'].includes(path)) {
       const headings = {
         '/admin/toko/banner': ['Banner Beranda', 'Kelola slide dan gambar yang ditampilkan di halaman utama.'],
+        '/admin/toko/auth': ['Gambar auth', 'Atur gambar panel kanan pada halaman masuk dan daftar.'],
         '/admin/toko/promo': ['Promo toko', 'Atur penawaran yang tampil di halaman Promo.'],
         '/admin/toko/reseller': ['Program reseller', 'Atur harga paket dan ketentuan yang tampil sebelum pembelian.'],
       };
@@ -1492,6 +1504,8 @@
       const file = input.files?.[0];
       if (!file) return;
       const message = input.closest('form')?.querySelector('[data-admin-message], [data-cms-message]');
+      const authControls = [...(input.closest('[data-storefront-kind="authVisual"]')?.querySelectorAll('button, input[type="file"]') || [])];
+      authControls.forEach(control => { control.disabled = true; });
       try {
         const result = await requestApi('/api/admin/uploads', { method: 'POST', body: await filePayload(file) });
         const upload = input.closest('.admin-image-upload');
@@ -1504,7 +1518,7 @@
         if (message) { message.textContent = 'Gambar sudah diunggah. Simpan formulir untuk menerapkan perubahan.'; message.classList.remove('is-error'); }
       } catch (error) {
         if (message) { message.textContent = error.message; message.classList.add('is-error'); }
-      }
+      } finally { authControls.forEach(control => { control.disabled = false; }); }
     }));
 
     app.querySelectorAll('[data-product-form]').forEach((form) => form.addEventListener('submit', async (event) => {
@@ -1588,6 +1602,12 @@
     }));
     app.querySelectorAll('[data-remove-cms-row]').forEach((button) => button.addEventListener('click', () => button.closest('[data-cms-row]')?.remove()));
 
+    app.querySelector('[data-reset-auth-image]')?.addEventListener('click', (event) => {
+      const form = event.currentTarget.closest('form');
+      form.querySelector('[data-image-target]').value = '';
+      form.querySelector('[data-image-preview]').innerHTML = '<span>Placeholder</span>';
+      form.querySelector('[data-image-name]').textContent = 'Belum ada gambar';
+    });
     app.querySelector('[data-storefront-form]')?.addEventListener('submit', async (event) => {
       event.preventDefault();
       const form = event.currentTarget;
@@ -1597,7 +1617,8 @@
       const storefront = kind === 'categories' ? { categories: readCmsRows(form, 'category') }
         : kind === 'banners' ? { banners: readCmsRows(form, 'banner') }
           : kind === 'promotions' ? { promotions: readCmsRows(form, 'promotion') }
-            : { resellerPlan: { price: Number(fields.get('resellerPlanPrice')), terms: fields.get('resellerPlanTerms') } };
+            : kind === 'authVisual' ? { authVisual: { image: form.querySelector('[data-image-target]').value, alt: fields.get('authVisualAlt') } }
+              : { resellerPlan: { price: Number(fields.get('resellerPlanPrice')), terms: fields.get('resellerPlanTerms') } };
       try {
         STOREFRONT = await requestApi('/api/admin/storefront', { method: 'PUT', body: { storefront } });
         CATEGORIES = STOREFRONT.categories;
@@ -2125,14 +2146,15 @@
 
   async function loadCatalog() {
     try {
-      const [result, storefront, session] = await Promise.all([
-        requestApi('/api/products'), requestApi('/api/storefront'), requestApi('/api/auth/session'),
+      const [result, storefront, session, authOptions] = await Promise.all([
+        requestApi('/api/products'), requestApi('/api/storefront'), requestApi('/api/auth/session'), requestApi('/api/auth/options'),
       ]);
       if (!Array.isArray(result.products)) throw new Error('Katalog belum dapat dimuat.');
       PRODUCTS = result.products;
       STOREFRONT = storefront;
       if (Array.isArray(storefront.categories) && storefront.categories.length) CATEGORIES = storefront.categories;
       currentUser = session.user || null;
+      AUTH_OPTIONS = authOptions;
       cart = readCart();
       try { window.localStorage.setItem(CART_KEY, JSON.stringify(cart)); } catch { /* Guest cart is optional when storage is unavailable. */ }
       await render();
