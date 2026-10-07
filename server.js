@@ -72,6 +72,9 @@ const MIME = {
 
 function validateProductionConfiguration() {
   if (NODE_ENV !== 'production') {
+    if (NODE_ENV !== 'test' && process.env.MIDTRANS_IS_PRODUCTION === 'true') {
+      throw new Error('Kredensial Midtrans Production hanya boleh digunakan saat NODE_ENV=production.');
+    }
     if (NODE_ENV !== 'test' && process.env.DOKU_IS_PRODUCTION === 'true') {
       throw new Error('Kredensial DOKU Production hanya boleh digunakan saat NODE_ENV=production.');
     }
@@ -347,7 +350,7 @@ async function dokuSnapRequest(pathname, body, config = dokuConfig(), externalId
   try { result = await response.json(); } catch { throw Object.assign(new Error('Respons QRIS DOKU tidak dapat dibaca.'), { status: 502 }); }
   if (!response.ok || !String(result.responseCode || '').startsWith('200')) {
     console.error('DOKU SNAP request rejected:', JSON.stringify({ httpStatus: response.status, code: String(result.responseCode || 'unknown'), path: pathname }));
-    const status = response.status === 401 ? 401 : response.status === 400 ? 502 : 502;
+    const status = 502;
     throw Object.assign(new Error(response.status === 401
       ? 'DOKU menolak autentikasi permintaan. Periksa pasangan credential dan environment akun.'
       : 'DOKU belum dapat memproses QRIS. Periksa aktivasi layanan merchant lalu coba lagi.'), { status, providerRejected: true, providerHttpStatus: response.status, providerCode: String(result.responseCode || '') });
@@ -545,7 +548,7 @@ async function handleDokuNotify(req, res) {
   } else if (['REFUNDED', '04'].includes(callbackStatus) && order.paymentStatus === 'paid' && order.refundStatus === 'requested' && payment.latestTransactionStatus === '04') {
     const result = saveDokuConfirmedRefund(queryOrder, payment, 'DOKU');
     if (result.error) return json(res, 409, { error: 'Refund status cannot be updated.' });
-  } else if (['FAILED', 'CANCELED', '05', '06', '07'].includes(callbackStatus) && order.paymentStatus === 'pending') {
+  } else if (['05', '06', '07'].includes(payment.latestTransactionStatus) && order.paymentStatus === 'pending') {
     cancelPendingOrder(order.id);
   }
   return json(res, 200, { responseCode: '2005600', responseMessage: 'Successful' });
@@ -703,7 +706,7 @@ function publicOrder(order) {
   const {
     paymentQrString, paymentQrActions, refundKey, refundReason, refundProviderReference,
     midtransTransactionId, midtransMerchantId, dokuReferenceNo, dokuExternalId, dokuRequestDate,
-    dokuMerchantId, dokuApprovalCode, ...visible
+    dokuMerchantId, dokuApprovalCode, dokuGenerationUncertain, ...visible
   } = order;
   return visible;
 }
@@ -976,7 +979,7 @@ function resellerEntitlementsFor(user, orders, products) {
 
 function markOrderPaid(order, provider, reference) {
   if (order.paymentStatus === 'paid') return { order, changed: false };
-  const verifiedLateSettlement = order.paymentStatus === 'cancelled' && provider === 'QRIS otomatis';
+  const verifiedLateSettlement = order.paymentStatus === 'cancelled' && ['QRIS otomatis', 'DOKU QRIS'].includes(provider);
   if (order.paymentStatus !== 'pending' && !verifiedLateSettlement) return { error: 'Status pembayaran pesanan ini tidak dapat diubah.' };
   const now = new Date().toISOString();
   const updated = { ...order, paymentStatus: 'paid', paidAt: now, status: 'paid', paymentVerification: { provider, transactionReference: reference, verifiedAt: now } };
@@ -1216,14 +1219,17 @@ async function createDokuOrderQris(order) {
       throw Object.assign(new Error('QRIS untuk pesanan ini sudah tidak aktif. Buat pesanan baru untuk membayar.'), { status: 409 });
     }
   } else {
+    await dokuAccessTokenFor(config);
     const orders = readOrders();
     const index = orders.findIndex((entry) => entry.id === order.id && entry.userId === order.userId);
     if (index < 0 || orders[index].paymentStatus !== 'pending') throw Object.assign(new Error('Status pesanan sudah berubah. Muat ulang halaman pesanan.'), { status: 409 });
+    if (orders[index].dokuGenerationUncertain) throw Object.assign(new Error('Hasil pembuatan QRIS belum dapat dipastikan. Hubungi admin untuk memeriksa transaksi; QR baru belum dibuat agar pembayaran tidak ganda.'), { status: 409 });
     const today = new Date().toISOString().slice(0, 10);
     if (!dokuExternalId || orders[index].dokuRequestDate !== today) {
       dokuExternalId = generateDokuExternalId();
     }
-    orders[index] = { ...orders[index], paymentProvider: 'doku_qris_snap', dokuExternalId, dokuRequestDate: today };
+    // Persist before sending: after a timeout or process restart we must not create another charge blindly.
+    orders[index] = { ...orders[index], paymentProvider: 'doku_qris_snap', dokuExternalId, dokuRequestDate: today, dokuGenerationUncertain: true };
     saveOrders(orders);
 
     const validityPeriod = new Date(Date.now() + 30 * 60 * 1000).toISOString();
@@ -1235,7 +1241,21 @@ async function createDokuOrderQris(order) {
       validityPeriod,
       additionalInfo: { postalCode: config.postalCode, feeType: '1' },
     };
-    const { result } = await dokuSnapRequest('/snap-adapter/b2b/v1.0/qr/qr-mpm-generate', request, config, dokuExternalId);
+    let result;
+    try {
+      ({ result } = await dokuSnapRequest('/snap-adapter/b2b/v1.0/qr/qr-mpm-generate', request, config, dokuExternalId));
+    } catch (error) {
+      // Only an explicit rejection guarantees there is no new QR to reconcile.
+      if (error.providerRejected && error.providerHttpStatus < 500 && ![406, 409].includes(error.providerHttpStatus)) {
+        const current = readOrders();
+        const currentIndex = current.findIndex((entry) => entry.id === order.id);
+        if (currentIndex >= 0) {
+          current[currentIndex] = { ...current[currentIndex], dokuGenerationUncertain: false };
+          saveOrders(current);
+        }
+      }
+      throw error;
+    }
     if (String(result.responseCode || '').slice(0, 3) !== '200'
       || result.partnerReferenceNo !== order.id
       || typeof result.referenceNo !== 'string' || !result.referenceNo
@@ -1249,7 +1269,7 @@ async function createDokuOrderQris(order) {
 
     const latestOrders = readOrders();
     const latestIndex = latestOrders.findIndex((entry) => entry.id === order.id && entry.userId === order.userId);
-    if (latestIndex < 0 || latestOrders[latestIndex].paymentStatus !== 'pending') throw Object.assign(new Error('Status pesanan sudah berubah. Muat ulang halaman pesanan.'), { status: 409 });
+    if (latestIndex < 0) throw Object.assign(new Error('Pesanan tidak ditemukan.'), { status: 409 });
     latestOrders[latestIndex] = {
       ...latestOrders[latestIndex],
       paymentProvider: 'doku_qris_snap',
@@ -1257,6 +1277,7 @@ async function createDokuOrderQris(order) {
       dokuExternalId,
       dokuRequestDate: today,
       dokuMerchantId: config.merchantId,
+      dokuGenerationUncertain: false,
       paymentInitialized: true,
       paymentExpiresAt: expiresAt,
       paymentQrString: qrisContent,
@@ -1533,9 +1554,9 @@ async function handleApi(req, res, url) {
     if (!user) return json(res, 401, { error: 'Masuk untuk membuat QRIS.' });
     const order = readOrders().find((entry) => entry.id === createQrisMatch[1] && entry.userId === user.id);
     if (!order) return json(res, 404, { error: 'Pesanan tidak ditemukan.' });
-    if (order.paymentStatus === 'paid' || order.paymentStatus === 'refunded' || order.qrisImage) return json(res, 200, { order: publicOrder(order) });
+    if (order.paymentStatus === 'paid' || order.paymentStatus === 'refunded') return json(res, 200, { order: publicOrder(order) });
     if (order.paymentStatus !== 'pending') return json(res, 409, { error: 'Pesanan ini sudah tidak dapat dibayar.' });
-    const reservationExpiry = Date.parse(order.reservationExpiresAt || '');
+    const reservationExpiry = Date.parse(order.paymentInitialized ? order.paymentExpiresAt || '' : order.reservationExpiresAt || '');
     if (Number.isFinite(reservationExpiry) && reservationExpiry <= Date.now()) {
       const orders = readOrders();
       const index = orders.findIndex((entry) => entry.id === order.id && entry.userId === user.id);
@@ -1545,6 +1566,7 @@ async function handleApi(req, res, url) {
       }
       return json(res, 409, { error: 'Waktu konfirmasi pesanan habis. Silakan buat pesanan baru.' });
     }
+    if (order.qrisImage) return json(res, 200, { order: publicOrder(order) });
     if (paymentCreationLocks.has(order.id)) return json(res, 409, { error: 'QRIS sedang dibuat. Tunggu sebentar lalu muat ulang pesanan.' });
     paymentCreationLocks.add(order.id);
     try {
@@ -1813,6 +1835,11 @@ async function handleApi(req, res, url) {
       try {
         const config = dokuConfig();
         const currentPayment = await queryDokuQrisPayment(order, config);
+        if (currentPayment.latestTransactionStatus === '04') {
+          const confirmed = saveDokuConfirmedRefund(order, currentPayment, admin.email);
+          if (confirmed.error) return json(res, 409, { error: confirmed.error });
+          return json(res, 200, { order: publicOrder(confirmed.order), refundConfirmed: true });
+        }
         const approvalCode = currentPayment.additionalInfo?.approvalCode;
         if (currentPayment.latestTransactionStatus !== '00' || typeof approvalCode !== 'string' || !approvalCode) {
           return json(res, 409, { error: 'DOKU belum mengonfirmasi pembayaran yang diperlukan untuk refund.' });

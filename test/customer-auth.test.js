@@ -24,6 +24,12 @@ let midtransChargeResponse = null;
 let midtransRefundResponse = null;
 let dropChargeResponseOnce = false;
 let serverOutput = '';
+const testRsa = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 });
+const testDokuSettings = {
+  DOKU_IS_PRODUCTION: 'false', DOKU_CLIENT_ID: 'MCH-test', DOKU_CLIENT_SECRET: 'doku-test-secret',
+  DOKU_MERCHANT_ID: 'mall-test', DOKU_TERMINAL_ID: 'BACS001', DOKU_POSTAL_CODE: '12345',
+  DOKU_PRIVATE_KEY_BASE64: Buffer.from(testRsa.privateKey.export({ type: 'pkcs8', format: 'pem' })).toString('base64'),
+};
 
 async function freePort() {
   const probe = net.createServer();
@@ -50,6 +56,17 @@ async function request(route, { method = 'GET', body, cookie, headers = {} } = {
 }
 
 async function createQris(orderId, cookie) {
+  // Existing Midtrans orders remain payable after the provider migration.
+  const ordersFile = path.join(tempDirectory, 'orders.json');
+  const orders = JSON.parse(await fs.readFile(ordersFile, 'utf8'));
+  const order = orders.find(entry => entry.id === orderId);
+  order.paymentProvider = 'qris_dynamic';
+  order.midtransTransactionId = 'MTX-' + orderId;
+  order.midtransMerchantId = 'merchant-test';
+  order.paymentInitialized = true;
+  order.paymentExpiresAt = new Date(Date.now() + 30 * 60000).toISOString();
+  midtransTransactions.set(orderId, order.total);
+  await fs.writeFile(ordersFile, JSON.stringify(orders));
   return request(`/api/orders/${encodeURIComponent(orderId)}/create-qris`, { method: 'POST', cookie, body: {} });
 }
 
@@ -133,7 +150,7 @@ before(async () => {
   publicOrigin = 'https://bacshop.example';
   serverProcess = spawn(process.execPath, ['server.js'], {
     cwd: root,
-    env: { ...process.env, NODE_ENV: 'test', PORT: String(port), BACSHOP_DATA_DIR: tempDirectory, BACSHOP_PRODUCTS_FILE: productFile, BACSHOP_UPLOADS_DIR: uploadDirectory,
+    env: { ...process.env, ...testDokuSettings, NODE_ENV: 'test', PORT: String(port), BACSHOP_DATA_DIR: tempDirectory, BACSHOP_PRODUCTS_FILE: productFile, BACSHOP_UPLOADS_DIR: uploadDirectory,
       BACSHOP_PUBLIC_ORIGIN: publicOrigin, BACSHOP_COOKIE_SECURE: 'true', BACSHOP_TRUSTED_PROXY_IPS: '127.0.0.1',
       MIDTRANS_API_BASE_URL: midtransBaseUrl, MIDTRANS_MERCHANT_ID: 'merchant-test', MIDTRANS_SERVER_KEY: 'test-server-key' },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -183,7 +200,7 @@ after(async () => {
 test('health endpoint is suitable for deployment probes and discloses no payment credentials', async () => {
   const health = await request('/api/health');
   assert.equal(health.response.status, 200);
-  assert.deepEqual(health.data, { status: 'ok', paymentConfigured: true });
+  assert.deepEqual(health.data, { status: 'ok', paymentProvider: 'DOKU', paymentConfigured: true });
   assert.equal(JSON.stringify(health.data).includes('test-server-key'), false);
 });
 
@@ -218,7 +235,7 @@ test('production payment credentials are rejected before a development server to
   }
   assert.ok(exited, 'the development server must stop before opening a listener');
   assert.notEqual(exited[0], 0);
-  assert.match(output, /Kunci pembayaran Production hanya boleh digunakan saat NODE_ENV=production/);
+  assert.match(output, /Kredensial Midtrans Production hanya boleh digunakan saat NODE_ENV=production/);
   assert.doesNotMatch(output, /Mid-server-test-placeholder/);
   await assert.rejects(fs.access(dataDirectory), { code: 'ENOENT' });
 });
@@ -279,8 +296,8 @@ test('production configuration starts with HTTPS origin, secure admin setup, and
     const base = `http://127.0.0.1:${port}`;
     const health = await fetch(`${base}/api/health`);
     assert.equal(health.status, 200);
-    assert.deepEqual(await health.json(), { status: 'ok', paymentConfigured: true });
-    assert.equal(health.headers.get('strict-transport-security'), 'max-age=15552000');
+    assert.deepEqual(await health.json(), { status: 'ok', paymentProvider: 'DOKU', paymentConfigured: false });
+    assert.equal(health.headers.get('strict-transport-security'), 'max-age=31536000; includeSubDomains');
 
     const setup = await fetch(`${base}/api/admin/setup`, {
       method: 'POST',
@@ -307,60 +324,25 @@ test('production configuration starts with HTTPS origin, secure admin setup, and
   }
 });
 
-test('checkout confirms the order before creating a dynamic QRIS on the payment step', async () => {
+test('existing Midtrans orders retrieve their QR with server-side credentials after migration', async () => {
   midtransRequests = [];
   const registration = await request('/api/auth/register', {
-    method: 'POST', body: { name: 'QR Buyer', email: 'midtrans@example.test', password: 'BuyerPass123!' },
+    method: 'POST', body: { name: 'Legacy Buyer', email: 'midtrans@example.test', password: 'BuyerPass123!' },
   });
   const buyerCookie = cookieFrom(registration.response);
   const confirmed = await request('/api/orders', { method: 'POST', cookie: buyerCookie, body: { kind: 'reseller-plan' } });
   assert.equal(confirmed.response.status, 201);
-  assert.equal(confirmed.data.order.total, 149000);
-  assert.equal(confirmed.data.order.paymentStatus, 'pending');
-  assert.equal(confirmed.data.order.paymentInitialized, false);
-  assert.equal(confirmed.data.order.qrisImage, undefined);
-  assert.equal(midtransRequests.some((entry) => entry.path === '/v2/charge'), false, 'order review does not create a payment');
+  assert.equal(confirmed.data.order.paymentProvider, 'doku_qris_snap');
   const order = await createQris(confirmed.data.order.id, buyerCookie);
   assert.equal(order.response.status, 200);
   assert.match(order.data.order.qrisImage, /^data:image\/png;base64,/);
   assert.equal(order.data.order.paymentProvider, 'qris_dynamic');
-  const charge = midtransRequests.find((entry) => entry.method === 'POST' && entry.path === '/v2/charge');
-  assert.ok(charge, 'checkout calls the server-side Core API charge endpoint');
-  assert.equal(charge.body.payment_type, 'qris');
-  assert.equal(charge.body.transaction_details.order_id, order.data.order.id);
-  assert.equal(charge.body.transaction_details.gross_amount, 149000);
-  assert.equal(charge.body.item_details.reduce((sum, item) => sum + item.price * item.quantity, 0), charge.body.transaction_details.gross_amount);
-  assert.equal(charge.body.customer_details.email, 'midtrans@example.test');
-  assert.equal(charge.body.custom_expiry.expiry_duration, 30);
-  assert.match(charge.body.custom_expiry.order_time, / \+0700$/);
-  assert.equal(charge.headers.authorization, `Basic ${Buffer.from('test-server-key:').toString('base64')}`);
-  assert.equal(midtransRequests.some((entry) => entry.method === 'POST' && entry.path.includes('dana')), false);
-  const imageRequests = midtransRequests.filter((entry) => entry.method === 'GET' && entry.path.endsWith('/qr-code'));
-  assert.deepEqual(imageRequests.map((entry) => entry.path), [
-    `/v4/qris/gopay/MTX-${order.data.order.id}/qr-code`,
-    `/v2/qris/MTX-${order.data.order.id}/qr-code`,
-  ]);
-  assert.ok(imageRequests.every((entry) => entry.headers.authorization === charge.headers.authorization), 'each image request uses server-side authorization');
-  assert.equal(order.data.order.paymentInstructions.includes('Midtrans'), false);
-  const storefrontScript = await fetch(`${baseUrl}/app.js`).then((response) => response.text());
-  assert.doesNotMatch(storefrontScript, /Midtrans|DANA/, 'the shop interface contains no processor branding');
+  assert.equal(midtransRequests.some(entry => entry.path === '/v2/charge'), false);
+  assert.ok(midtransRequests.some(entry => entry.path.endsWith('/status')));
+  assert.ok(midtransRequests.some(entry => entry.path.endsWith('/qr-code')));
+  assert.ok(midtransRequests.every(entry => entry.headers.authorization === 'Basic ' + Buffer.from('test-server-key:').toString('base64')));
 });
 
-test('a lost charge response is reconciled through Midtrans status before retrying a charge', async () => {
-  midtransRequests = [];
-  dropChargeResponseOnce = true;
-  const registration = await request('/api/auth/register', {
-    method: 'POST', body: { name: 'Retry Buyer', email: 'retry-payment@example.test', password: 'BuyerPass123!' },
-  });
-  const buyerCookie = cookieFrom(registration.response);
-  const confirmed = await request('/api/orders', { method: 'POST', cookie: buyerCookie, body: { kind: 'reseller-plan' } });
-  const order = await createQris(confirmed.data.order.id, buyerCookie);
-  assert.equal(order.response.status, 200);
-  assert.match(order.data.order.qrisImage, /^data:image\/png;base64,/);
-  assert.equal(midtransRequests.filter((entry) => entry.method === 'POST' && entry.path === '/v2/charge').length, 1);
-  assert.equal(midtransRequests.filter((entry) => entry.method === 'GET' && entry.path === `/v2/${order.data.order.id}/status`).length, 1);
-  assert.ok(midtransRequests.some((entry) => entry.method === 'GET' && entry.path === `/v2/qris/MTX-${order.data.order.id}/qr-code`));
-});
 
 test('public HTTPS origin can use APIs with Secure cookies and foreign origins are rejected', async () => {
   const health = await request('/api/health');
@@ -383,69 +365,8 @@ test('public HTTPS origin can use APIs with Secure cookies and foreign origins a
   assert.equal((await request('/api/health')).response.headers.get('x-frame-options'), 'DENY');
 });
 
-test('mismatched provider response gives a useful sanitized diagnostic', async () => {
-  serverOutput = '';
-  midtransChargeResponse = {
-    status_code: '202',
-    status_message: 'Merchant onboarding incomplete',
-    shouldNotLog: 'never-print-this-secret',
-  };
-  const registration = await request('/api/auth/register', {
-    method: 'POST', body: { name: 'QR Buyer', email: 'provider-mismatch@example.test', password: 'BuyerPass123!' },
-  });
-  const buyerCookie = cookieFrom(registration.response);
-  const confirmed = await request('/api/orders', { method: 'POST', cookie: buyerCookie, body: { kind: 'reseller-plan' } });
-  const order = await createQris(confirmed.data.order.id, buyerCookie);
-  midtransChargeResponse = null;
 
-  assert.equal(order.response.status, 502);
-  assert.match(order.data.error, /kode respons/);
-  assert.doesNotMatch(serverOutput, /never-print-this-secret/);
-  assert.doesNotMatch(serverOutput, /Merchant onboarding incomplete/);
-  assert.doesNotMatch(serverOutput, /test-server-key/);
-});
 
-test('an ambiguous payment response leaves the confirmed order visible without a QR image', async () => {
-  midtransChargeResponse = { status_code: '202', status_message: 'Charge pending review' };
-  const registration = await request('/api/auth/register', {
-    method: 'POST', body: { name: 'QR Buyer', email: 'ambiguous-provider@example.test', password: 'BuyerPass123!' },
-  });
-  const buyerCookie = cookieFrom(registration.response);
-  const confirmed = await request('/api/orders', { method: 'POST', cookie: buyerCookie, body: { kind: 'reseller-plan' } });
-  const create = await createQris(confirmed.data.order.id, buyerCookie);
-  midtransChargeResponse = null;
-  const list = await request('/api/orders', { cookie: buyerCookie });
-
-  assert.equal(create.response.status, 502);
-  assert.match(create.data.error, /Respons Midtrans tidak cocok/);
-  assert.equal(list.response.status, 200);
-  assert.equal(list.data.orders.length, 1, 'the buyer can find an uncertain payment before trying again');
-  assert.equal(list.data.orders[0].paymentStatus, 'pending');
-  assert.equal(list.data.orders[0].status, 'awaiting_payment');
-  assert.equal(list.data.orders[0].qrisImage, undefined);
-});
-
-test('an inactive Midtrans QRIS channel gives an actionable error and preserves the confirmed order', async () => {
-  midtransChargeResponse = {
-    status_code: '402',
-    status_message: 'Payment channel is not activated.',
-    id: 'provider-error-reference',
-  };
-  const registration = await request('/api/auth/register', {
-    method: 'POST', body: { name: 'QR Buyer', email: 'inactive-channel@example.test', password: 'BuyerPass123!' },
-  });
-  const buyerCookie = cookieFrom(registration.response);
-  const confirmed = await request('/api/orders', { method: 'POST', cookie: buyerCookie, body: { kind: 'reseller-plan' } });
-  const create = await createQris(confirmed.data.order.id, buyerCookie);
-  midtransChargeResponse = null;
-  const list = await request('/api/orders', { cookie: buyerCookie });
-
-  assert.equal(create.response.status, 502);
-  assert.match(create.data.error, /Kanal QRIS dinamis belum diaktifkan untuk Core API/);
-  assert.equal(list.response.status, 200);
-  assert.equal(list.data.orders.length, 1, 'the confirmed order remains available while the QRIS channel is provisioned');
-  assert.equal(list.data.orders[0].paymentInitialized, false);
-});
 
 test('buyer can register, log in, and read their own profile', async () => {
   const registered = await request('/api/auth/register', {
@@ -610,7 +531,7 @@ test('Midtrans QRIS payment status is verified before reseller access is unlocke
   midtransRequests = [];
   await fs.writeFile(path.join(tempDirectory, 'storefront.json'), JSON.stringify({ payment: { qrisImage: '/assets/uploads/legacy-static.png', instructions: 'Pindai QR statis' } }));
   const storefront = await request('/api/storefront');
-  assert.equal(storefront.data.payment.provider, 'QRIS');
+  assert.equal(storefront.data.payment.provider, 'DOKU QRIS');
   assert.equal(storefront.data.payment.available, true);
   assert.equal('qrisImage' in storefront.data.payment, false);
   const registration = await request('/api/auth/register', {
@@ -623,11 +544,7 @@ test('Midtrans QRIS payment status is verified before reseller access is unlocke
   assert.equal(order.response.status, 200);
   assert.match(order.data.order.qrisImage, /^data:image\/png;base64,/);
   assert.equal(order.data.order.paymentStatus, 'pending');
-  const generate = midtransRequests.find((entry) => entry.method === 'POST' && entry.path === '/v2/charge');
-  assert.ok(generate);
-  assert.equal(generate.body.transaction_details.gross_amount, 149000);
-  assert.equal(generate.body.transaction_details.order_id, order.data.order.id);
-  assert.equal(generate.body.payment_type, 'qris');
+  assert.equal(midtransRequests.some(entry => entry.path === '/v2/charge'), false);
   const staticConfirm = await request(`/api/admin/orders/${order.data.order.id}/confirm-payment`, { method: 'POST', cookie: adminCookie, body: { transactionReference: 'MANUAL-123' } });
   assert.equal(staticConfirm.response.status, 410);
   const pending = await request(`/api/orders/${order.data.order.id}/check-payment`, { method: 'POST', cookie: buyerCookie, body: {} });

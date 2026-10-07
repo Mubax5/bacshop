@@ -112,10 +112,13 @@ test('privacy, personal-data, and service terms pages share the FAQ information 
   assert.match(app, /href="#\/ketentuan-layanan"/);
 });
 
-test('customer auth uses a left-aligned logo and a real, useful side panel', () => {
+test('customer auth keeps its logo on the right and renders a CMS-managed image panel', () => {
   const auth = between('function renderAuthPage(', 'function renderAccountPage(');
-  assert.match(auth, /class="auth-story"/);
+  assert.match(auth, /class="auth-story auth-visual"/);
   assert.match(auth, /class="auth-legal-links"/);
-  assert.match(styles, /\.auth-header\s*\{[^}]*justify-content:\s*flex-start/s);
-  assert.match(styles, /\.auth-layout\s*\{[^}]*grid-template-columns:\s*minmax\(0,1fr\)\s+minmax\(250px,320px\)/s);
+  assert.match(styles, /\.auth-header\s*\{[^}]*flex-direction:\s*row-reverse/s);
+  assert.match(styles, /\.auth-layout\s*\{[^}]*grid-template-columns:\s*minmax\(0,1fr\)\s+minmax\(0,1fr\)/s);
+  assert.match(auth, /STOREFRONT\.authVisual/);
+  assert.match(auth, /1440 × 1800 px/);
+  assert.match(auth, /assets\/google-logo\.png/);
 });
