@@ -51,6 +51,7 @@ const PRIVATE_DIR = process.env.BACSHOP_DATA_DIR || path.join(ROOT, '.bacshop-pr
 const PRODUCTS_FILE = process.env.BACSHOP_PRODUCTS_FILE || path.join(ROOT, 'data', 'products.json');
 const ADMIN_FILE = path.join(PRIVATE_DIR, 'admin.json');
 const USERS_FILE = path.join(PRIVATE_DIR, 'users.json');
+const USER_SESSIONS_FILE = path.join(PRIVATE_DIR, 'user-sessions.json');
 const ORDERS_FILE = path.join(PRIVATE_DIR, 'orders.json');
 const CMS_FILE = path.join(PRIVATE_DIR, 'storefront.json');
 const AUDIT_FILE = path.join(PRIVATE_DIR, 'audit.json');
@@ -117,7 +118,6 @@ let setupCode = adminRecord ? null : process.env.BACSHOP_ADMIN_SETUP_CODE || cry
 if (NODE_ENV === 'production' && !adminRecord && !process.env.BACSHOP_ADMIN_SETUP_CODE) throw new Error('Atur BACSHOP_ADMIN_SETUP_CODE sebelum setup admin production.');
 if (NODE_ENV === 'production' && !adminRecord && setupCode.length < 32) throw new Error('BACSHOP_ADMIN_SETUP_CODE minimal 32 karakter saat setup admin production.');
 const sessions = new Map();
-const userSessions = new Map();
 const loginAttempts = new Map();
 const userLoginAttempts = new Map();
 const paymentCreationLocks = new Set();
@@ -157,6 +157,15 @@ function saveProducts(products) {
 
 function readUsers() {
   return readJson(USERS_FILE, []);
+}
+
+function readUserSessions() {
+  const stored = readJson(USER_SESSIONS_FILE, {});
+  return stored && typeof stored === 'object' && !Array.isArray(stored) ? stored : {};
+}
+
+function saveUserSessions(userSessions) {
+  writeJsonAtomic(USER_SESSIONS_FILE, userSessions);
 }
 
 function readOrders() {
@@ -385,10 +394,13 @@ function activeSession(req) {
 
 function activeUser(req) {
   const token = userCookieValue(req);
-  const session = userSessions.get(token);
+  if (!token) return null;
+  const userSessions = readUserSessions();
+  const session = userSessions[token];
   if (!session) return null;
   if (session.expires < Date.now()) {
-    userSessions.delete(token);
+    delete userSessions[token];
+    saveUserSessions(userSessions);
     return null;
   }
   return readUsers().find((user) => user.id === session.userId) || null;
@@ -402,7 +414,13 @@ function setSession(res, email) {
 
 function setUserSession(res, userId) {
   const token = crypto.randomBytes(32).toString('base64url');
-  userSessions.set(token, { userId, expires: Date.now() + SESSION_MS });
+  const userSessions = readUserSessions();
+  const now = Date.now();
+  for (const [existingToken, session] of Object.entries(userSessions)) {
+    if (!session || session.expires <= now) delete userSessions[existingToken];
+  }
+  userSessions[token] = { userId, expires: now + SESSION_MS };
+  saveUserSessions(userSessions);
   res.setHeader('Set-Cookie', `${USER_COOKIE}=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${SESSION_MS / 1000}${COOKIE_SECURE ? '; Secure' : ''}`);
 }
 
@@ -414,7 +432,13 @@ function clearSession(req, res) {
 
 function clearUserSession(req, res) {
   const token = userCookieValue(req);
-  if (token) userSessions.delete(token);
+  if (token) {
+    const userSessions = readUserSessions();
+    if (userSessions[token]) {
+      delete userSessions[token];
+      saveUserSessions(userSessions);
+    }
+  }
   res.setHeader('Set-Cookie', `${USER_COOKIE}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0${COOKIE_SECURE ? '; Secure' : ''}`);
 }
 
