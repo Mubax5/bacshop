@@ -60,6 +60,7 @@ const COOKIE = 'BacshopAdmin';
 const USER_COOKIE = 'BacshopUser';
 const CATEGORIES = new Set(['ai', 'streaming', 'desain', 'musik', 'office', 'editing', 'voucher']);
 const MIDTRANS_NOTIFY_PATH = '/api/payments/notify';
+const PAYMENT_TEST_EMAIL = (process.env.BACSHOP_PAYMENT_TEST_EMAIL || '').trim().toLowerCase();
 const MIME = {
   '.css': 'text/css; charset=utf-8', '.html': 'text/html; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8', '.json': 'application/json; charset=utf-8',
@@ -442,8 +443,11 @@ function standardSecurityHeaders() {
     'X-Frame-Options': 'DENY',
     'Referrer-Policy': 'strict-origin-when-cross-origin',
     'Permissions-Policy': 'camera=(), microphone=(), geolocation=()',
+    'Cross-Origin-Opener-Policy': 'same-origin',
+    'Cross-Origin-Resource-Policy': 'same-origin',
+    'Origin-Agent-Cluster': '?1',
   };
-  if (PUBLIC_ORIGIN.startsWith('https://')) headers['Strict-Transport-Security'] = 'max-age=15552000';
+  if (PUBLIC_ORIGIN.startsWith('https://')) headers['Strict-Transport-Security'] = 'max-age=31536000; includeSubDomains';
   return headers;
 }
 
@@ -518,8 +522,12 @@ function userCanResell(user, productId) {
   return Boolean(user && (user.resellerPlan?.active || (user.productEntitlements || []).includes(productId)));
 }
 
+function canAccessInternalTestProduct(user, product) {
+  return product?.internalTestOnly !== true || Boolean(PAYMENT_TEST_EMAIL && user?.email === PAYMENT_TEST_EMAIL);
+}
+
 function publicProduct(product, user) {
-  const { resellerPrice, bulkMinimum, rating, sold: seededSales, stockDeductionOrderIds, ...retailProduct } = product;
+  const { resellerPrice, bulkMinimum, rating, sold: seededSales, stockDeductionOrderIds, internalTestOnly, ...retailProduct } = product;
   const actualSales = readOrders().reduce((sum, order) => {
     if (order.paymentStatus !== 'paid' || order.status === 'refunded' || order.kind !== 'products') return sum;
     return sum + order.items.reduce((count, item) => count + (item.productId === product.id ? item.quantity : 0), 0);
@@ -607,6 +615,7 @@ function validateProduct(input, id, products) {
   }
   if (products.some((product) => product.id !== id && product.slug === input.slug)) return 'URL produk sudah dipakai produk lain.';
   if (input.image && !safeAssetPath(input.image)) return 'Pilih gambar yang sudah diunggah.';
+  if (input.internalTestOnly !== undefined && typeof input.internalTestOnly !== 'boolean') return 'Status produk uji internal tidak valid.';
   return null;
 }
 
@@ -663,6 +672,7 @@ function normalizeProduct(input, id, products) {
     archived: Boolean(input.archived),
     resellerPrice: input.resellerPrice === '' || input.resellerPrice === null || input.resellerPrice === undefined ? null : Number(input.resellerPrice),
     bulkMinimum: input.resellerPrice === '' || input.resellerPrice === null || input.resellerPrice === undefined ? null : Number(input.bulkMinimum),
+    internalTestOnly: input.internalTestOnly === true,
     specifications: Array.isArray(input.specifications) ? input.specifications : [],
   };
   delete product.stockDeductionOrderIds;
@@ -1148,7 +1158,7 @@ async function handleApi(req, res, url) {
   if (req.method === 'GET' && url.pathname === '/api/storefront') return json(res, 200, readStorefront());
   if (req.method === 'GET' && url.pathname === '/api/products') {
     const user = activeUser(req);
-    return json(res, 200, { products: readProducts().filter((product) => !product.archived).map((product) => publicProduct(product, user)) });
+    return json(res, 200, { products: readProducts().filter((product) => !product.archived && canAccessInternalTestProduct(user, product)).map((product) => publicProduct(product, user)) });
   }
   if (req.method === 'GET' && url.pathname === '/api/orders') {
     const user = activeUser(req);
@@ -1337,7 +1347,7 @@ async function handleApi(req, res, url) {
       for (const requested of body.items) {
         const product = products.find((entry) => entry.id === requested?.id);
         const quantity = Number(requested?.quantity);
-        if (!product || product.archived || !Number.isInteger(quantity) || quantity < 1 || quantity > 99 || product.orderMode === 'preorder' && !product.preOrderConfirmed) return json(res, 400, { error: 'Periksa produk, jumlah, atau ketersediaan stok di keranjang.' });
+        if (!product || product.archived || !canAccessInternalTestProduct(user, product) || !Number.isInteger(quantity) || quantity < 1 || quantity > 99 || product.orderMode === 'preorder' && !product.preOrderConfirmed) return json(res, 400, { error: 'Periksa produk, jumlah, atau ketersediaan stok di keranjang.' });
         const selection = resolveSpecifications(product, requested.specifications);
         if (selection.error) return json(res, 400, { error: selection.error });
         const key = product.id + ':' + JSON.stringify(selection.specifications.map((entry) => [entry.id, entry.value]));
@@ -1632,7 +1642,7 @@ function serveStatic(req, res, pathname) {
     'Content-Type': MIME[path.extname(absolute)] || 'application/octet-stream',
     'Cache-Control': 'no-store',
     ...standardSecurityHeaders(),
-      'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'",
+      'Content-Security-Policy': `default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'${PUBLIC_ORIGIN.startsWith('https://') ? '; upgrade-insecure-requests; block-all-mixed-content' : ''}`,
   });
   res.end(req.method === 'HEAD' ? undefined : contents);
 }

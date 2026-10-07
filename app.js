@@ -1091,6 +1091,7 @@
         <label class="admin-wide">Ketentuan produk<textarea name="terms" rows="5" spellcheck="false">${escapeHtml(termsText)}</textarea><small>Satu ketentuan per baris, format: Nama: keterangan.</small></label>
         ${specificationEditor(product)}
         ${imageUploadField('Gambar produk', product.image || '')}
+        <label class="admin-confirm-stock"><input name="internalTestOnly" type="checkbox" ${product.internalTestOnly ? 'checked' : ''} /><span><strong>Produk uji internal</strong><small>Hanya akun uji pembayaran yang diizinkan server dapat melihat dan memesannya.</small></span></label>
         <label class="admin-confirm-stock"><input name="preOrderConfirmed" type="checkbox" ${product.preOrderConfirmed ? 'checked' : ''} /><span><strong>Stok pre-order sudah dikonfirmasi</strong><small>Pemesanan dibuka setelah stok dipastikan.</small></span></label>
       </div><p class="admin-form-message" data-admin-message role="status" aria-live="polite"></p><div class="admin-form-actions"><button class="button button-primary" type="submit">${isNew ? 'Tambah produk' : 'Simpan perubahan'}</button>${isNew ? '' : `<button class="button button-danger" type="button" data-delete-product="${escapeHtml(product.id)}">Hapus produk</button>`}</div>
     </form>`;
@@ -1536,6 +1537,7 @@
       product.bulkMinimum = product.resellerPrice === null ? null : Number(product.bulkMinimum);
       product.stock = product.stock === '' ? null : Number(product.stock);
       product.image = form.querySelector('[data-image-target]')?.value || '';
+      product.internalTestOnly = fields.has('internalTestOnly');
       product.preOrderConfirmed = fields.has('preOrderConfirmed');
       if (product.orderMode === 'ready') product.preOrderConfirmed = true;
       product.terms = termsFromTextarea(product.terms || '');

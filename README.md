@@ -81,6 +81,7 @@ BACSHOP_DATA_DIR=/var/lib/bacshop/private
 BACSHOP_PRODUCTS_FILE=/var/lib/bacshop/products.json
 BACSHOP_UPLOADS_DIR=/var/lib/bacshop/uploads
 BACSHOP_ADMIN_SETUP_CODE=<kode-acak-minimal-32-karakter>
+BACSHOP_PAYMENT_TEST_EMAIL=<email-akun-yang-boleh-menguji-pembayaran>
 MIDTRANS_SERVER_KEY=<server-key-production>
 MIDTRANS_MERCHANT_ID=<merchant-id-production>
 MIDTRANS_IS_PRODUCTION=true
@@ -91,6 +92,8 @@ Salin `data/products.json` ke `BACSHOP_PRODUCTS_FILE` saat menyiapkan server per
 Jika memakai reverse proxy, set `BACSHOP_TRUSTED_PROXY_IPS` hanya ke alamat proxy yang benar-benar tersambung ke Node, dan pastikan proxy menghapus lalu menulis ulang `X-Forwarded-For`. Header tersebut hanya dipakai untuk pembatasan percobaan login; tanpa proxy yang dipercaya, aplikasi mengabaikannya.
 
 Setelah konfigurasi benar, jalankan `npm start`. Startup production gagal dengan pesan yang tidak memuat rahasia jika origin HTTPS, folder persistent yang bisa ditulis, atau kunci Midtrans Production belum disiapkan. Folder data pribadi dibatasi ke akun proses di sistem Unix. `GET /api/health` memberi status hidup dan apakah kunci pembayaran terkonfigurasi; status itu tidak membuktikan QRIS aktif di akun Midtrans. Pada permintaan charge production, server mengirim `X-Override-Notification` menuju `${BACSHOP_PUBLIC_ORIGIN}/api/payments/notify`. [Midtrans mendukung URL notifikasi per transaksi](https://docs.midtrans.com/docs/https-notification-webhooks); callback transaksi Bacshop diarahkan ke Bacshop tanpa mengganti URL global merchant yang mungkin dipakai aplikasi lain. Header ini tidak dikirim untuk pemeriksaan status atau refund. Penerimaan callback tetap harus dibuktikan dengan transaksi nyata.
+
+Produk yang ditandai **Produk uji internal** disembunyikan dari pengunjung biasa dan ditolak lagi oleh server saat pemesanan. Atur `BACSHOP_PAYMENT_TEST_EMAIL` ke satu email akun uji yang sah sebelum membuat produk tersebut. Gunakan hanya untuk memverifikasi integrasi, lalu arsipkan atau hapus setelah pengujian selesai.
 
 ## Azure App Service
 
