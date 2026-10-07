@@ -235,7 +235,14 @@ async function midtransRequest(method, pathname, body, config = midtransConfig()
   try {
     response = await fetch(`${config.baseUrl}${pathname}`, {
       method,
-      headers: { Accept: 'application/json', Authorization: midtransAuthorization(config), ...(body ? { 'Content-Type': 'application/json' } : {}) },
+      headers: {
+        Accept: 'application/json',
+        Authorization: midtransAuthorization(config),
+        ...(body ? { 'Content-Type': 'application/json' } : {}),
+        ...(NODE_ENV === 'production' && method === 'POST' && pathname === '/v2/charge'
+          ? { 'X-Override-Notification': `${PUBLIC_ORIGIN}/api/payments/notify` }
+          : {}),
+      },
       ...(body ? { body: JSON.stringify(body) } : {}),
       signal: AbortSignal.timeout(8000),
     });
