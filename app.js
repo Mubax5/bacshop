@@ -626,12 +626,13 @@
       const price = Number(STOREFRONT.resellerPlan?.price) || 149000;
       const visibleResellerProduct = PRODUCTS.find((product) => product.priceContext === 'reseller');
       const resellerAccess = Boolean(currentUser?.resellerPlan || currentUser?.isReseller || visibleResellerProduct);
+      const paymentReady = STOREFRONT.payment?.available !== false;
       const planAction = currentUser?.resellerPlan
         ? '<span class="reseller-active-label">Akses seluruh katalog aktif</span><a class="button button-primary" href="#/kategori/semua">Lihat katalog</a>'
         : adminPreviewMode
           ? '<span class="reseller-active-label">Pembelian nonaktif dalam pratinjau.</span>'
           : currentUser
-            ? '<button class="button button-primary" type="button" data-buy-reseller-plan>Aktifkan akses katalog</button>'
+            ? paymentReady ? '<button class="button button-primary" type="button" data-buy-reseller-plan>Aktifkan akses katalog</button>' : '<span class="reseller-active-label">Pembayaran QRIS sedang disiapkan.</span>'
             : '<a class="button button-primary" href="#/masuk?next=%2Fprogram-reseller">Masuk untuk mengaktifkan</a>';
       const resellerPreview = visibleResellerProduct
         ? `<article class="reseller-price-preview"><div class="reseller-preview-product-thumb ${visibleResellerProduct.image ? 'product-media' : 'image-placeholder'}" ${visibleResellerProduct.image ? `style="background-image:url('${escapeHtml(visibleResellerProduct.image)}')"` : ''} role="img" aria-label="Gambar ${escapeHtml(visibleResellerProduct.name)}"></div><div class="reseller-preview-product-copy"><span class="rail-eyebrow">Harga reseller aktif</span><strong>${escapeHtml(visibleResellerProduct.name)}</strong><span>${rupiah(visibleResellerProduct.price)}</span></div><a class="rail-link" href="#/produk/${encodeURIComponent(visibleResellerProduct.slug)}">Lihat produk ${feather('arrow-right')}</a></article>`
@@ -793,6 +794,7 @@
     const total = items.reduce((sum, item) => sum + item.unitPrice * item.quantity, 0);
     if (!items.length) return `<section class="page-panel"><div class="empty-state"><h1>Keranjang masih kosong</h1><p>Pilih produk dari katalog sebelum melanjutkan.</p><a class="button button-primary" href="#/kategori/semua">Lihat katalog</a></div></section>`;
     const itemCount = items.reduce((sum, item) => sum + item.quantity, 0);
+    const paymentReady = STOREFRONT.payment?.available !== false;
     return `<nav class="breadcrumbs" aria-label="Breadcrumb"><a href="#/">Beranda</a><span aria-hidden="true">›</span><a href="#/keranjang">Keranjang</a><span aria-hidden="true">›</span><span>Konfirmasi</span></nav>
       <section class="page-panel checkout-page">
         <div class="page-heading"><h1>Konfirmasi pesanan</h1><p>Pastikan produk, spesifikasi, dan jumlahnya sudah sesuai.</p></div>
@@ -805,7 +807,7 @@
             </section>
             <section class="checkout-order-panel checkout-order-review"><header><strong>Produk yang dipesan</strong><span>${itemCount} item</span></header><div class="checkout-order-list">${items.map((item) => `<div class="checkout-item"><div class="checkout-item-thumb ${item.product.image ? 'product-media' : 'image-placeholder'}" ${item.product.image ? `style="background-image:url('${escapeHtml(item.product.image)}')"` : ''} role="img" aria-label="Gambar ${escapeHtml(item.product.name)}"></div><span><strong>${escapeHtml(item.product.name)}</strong>${item.specificationText ? `<small>${escapeHtml(item.specificationText)}</small>` : ''}<small>${item.quantity} × ${rupiah(item.unitPrice)}</small></span><strong>${rupiah(item.unitPrice * item.quantity)}</strong></div>`).join('')}</div></section>
           </div>
-          <aside class="checkout-total-card"><h2>Total pesanan</h2><div class="summary-line"><span>Subtotal · ${itemCount} item</span><span>${rupiah(total)}</span></div><div class="summary-line"><span>Biaya layanan</span><span>Gratis</span></div><div class="summary-total"><span>Total</span><strong>${rupiah(total)}</strong></div><button class="button button-primary" type="button" data-confirm-order>Konfirmasi pesanan</button><p class="summary-note">QRIS dibuat setelah pesanan dikonfirmasi, pada halaman pembayaran.</p><p class="checkout-error" data-order-error role="status" aria-live="polite" hidden></p><a class="checkout-edit-cart" href="${checkoutItemsOverride?.length === 1 ? `#/produk/${encodeURIComponent(items[0].product.slug)}` : '#/keranjang'}">${checkoutItemsOverride?.length === 1 ? 'Kembali ke produk untuk mengubah pilihan' : 'Kembali ke keranjang untuk ubah jumlah'}</a></aside>
+          <aside class="checkout-total-card"><h2>Total pesanan</h2><div class="summary-line"><span>Subtotal · ${itemCount} item</span><span>${rupiah(total)}</span></div><div class="summary-line"><span>Biaya layanan</span><span>Gratis</span></div><div class="summary-total"><span>Total</span><strong>${rupiah(total)}</strong></div><button class="button button-primary" type="button" data-confirm-order ${paymentReady ? '' : 'disabled'}>Konfirmasi pesanan</button><p class="summary-note">${paymentReady ? 'QRIS DOKU dibuat setelah pesanan dikonfirmasi.' : 'Pembayaran QRIS sedang disiapkan. Pesanan belum dapat dibuat.'}</p><p class="checkout-error" data-order-error role="status" aria-live="polite" hidden></p><a class="checkout-edit-cart" href="${checkoutItemsOverride?.length === 1 ? `#/produk/${encodeURIComponent(items[0].product.slug)}` : '#/keranjang'}">${checkoutItemsOverride?.length === 1 ? 'Kembali ke produk untuk mengubah pilihan' : 'Kembali ke keranjang untuk ubah jumlah'}</a></aside>
         </div>
       </section>`;
   }

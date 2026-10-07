@@ -14,41 +14,34 @@ Data akun, sesi, pesanan, konten toko, dan audit admin disimpan di `.bacshop-pri
 - Login, pendaftaran, profil dan foto profil, pesanan, serta halaman pembayaran.
 - Harga reseller produk terbuka setelah pesanan bulk produk yang sama dibayar dan tidak direfund. Paket reseller sekali bayar mulai Rp149.000 membuka harga reseller untuk seluruh katalog.
 - Area admin terpisah untuk mengelola produk, kategori, banner placeholder, promo, syarat reseller, dan pemenuhan pesanan.
-- QRIS dinamis dibuat untuk setiap transaksi melalui Core API. Hanya gambar QRIS yang tampil di halaman pembayaran; integrasi tidak memakai halaman checkout atau widget pihak pemroses. Status pembayaran diperiksa melalui callback bertanda tangan atau pemeriksaan status server. Konfirmasi manual dan QR statis tidak dipakai.
+- QRIS dinamis DOKU dibuat khusus untuk setiap pesanan melalui SNAP API. Hanya gambar QRIS yang tampil di halaman pembayaran; status lunas diverifikasi kembali lewat API status DOKU. Callback bertanda tangan membantu memperbarui status, tetapi tidak menggantikan pemeriksaan server. Konfirmasi manual dan QR statis tidak dipakai.
 
 ### Kredensial pembayaran
 
-Checkout tetap tertutup sampai server memiliki Server Key. Salin `.env.example` menjadi `.env`, lalu isi file `.env` di folder aplikasi. Server membaca file itu saat mulai; environment yang sudah diatur pada host tetap memiliki prioritas. File `.env` diabaikan Git dan jangan dibagikan atau di-commit.
+Checkout baru memakai DOKU. Salin `.env.example` menjadi `.env`, isi environment server, lalu mulai ulang aplikasi. File `.env` diabaikan Git; jangan bagikan atau commit file itu.
 
-- `MIDTRANS_SERVER_KEY` — Server Key yang aktif untuk sandbox atau production.
-- `MIDTRANS_MERCHANT_ID` — opsional, untuk mencocokkan identitas merchant pada respons pembayaran.
-- `MIDTRANS_IS_PRODUCTION` — set `true` untuk production; tanpa ini server memakai sandbox.
+- `DOKU_CLIENT_ID` dan `DOKU_CLIENT_SECRET` — API credentials merchant dari DOKU.
+- `DOKU_PRIVATE_KEY_BASE64` atau `DOKU_PRIVATE_KEY` — private key RSA yang pasangannya terdaftar di DOKU. Base64 lebih praktis untuk App Service; jangan masukkan private key ke Git atau chat.
+- `DOKU_MERCHANT_ID`, `DOKU_TERMINAL_ID`, dan `DOKU_POSTAL_CODE` — identitas QRIS dan kode pos merchant yang disetujui DOKU.
+- `DOKU_IS_PRODUCTION` — `false` untuk Sandbox dan `true` untuk Production.
 
-Kunci dan mode Production hanya dapat dipakai saat `NODE_ENV=production` dengan origin HTTPS dan lokasi penyimpanan production yang terkonfigurasi. Jangan taruh Server Key Production di `.env` development; pakai kredensial Sandbox untuk preview lokal.
+Gunakan API credentials Sandbox di pengembangan. Production hanya bisa aktif dengan `NODE_ENV=production`, origin HTTPS, lokasi data persisten, dan semua konfigurasi DOKU Production yang valid. Bila konfigurasi DOKU belum lengkap, situs tetap dapat berjalan tetapi checkout tidak membuat pesanan sampai pembayaran disiapkan. Bila `DOKU_IS_PRODUCTION=true` namun kunci atau identitas tidak valid, startup Production akan berhenti agar tidak menerima pembayaran dalam konfigurasi yang keliru.
 
-Untuk sandbox, isi `.env` seperti ini lalu mulai ulang server:
-
-```dotenv
-MIDTRANS_SERVER_KEY=<server-key-sandbox>
-MIDTRANS_MERCHANT_ID=<merchant-id>
-MIDTRANS_IS_PRODUCTION=false
-```
-
-Untuk production, gunakan Server Key production dan ubah `MIDTRANS_IS_PRODUCTION=true`:
+Contoh Sandbox:
 
 ```dotenv
-MIDTRANS_SERVER_KEY=<server-key-production>
-MIDTRANS_MERCHANT_ID=<merchant-id>
-MIDTRANS_IS_PRODUCTION=true
+DOKU_CLIENT_ID=<client-id-sandbox>
+DOKU_CLIENT_SECRET=<client-secret-sandbox>
+DOKU_PRIVATE_KEY_BASE64=<private-key-rsa-sandbox-dalam-base64>
+DOKU_MERCHANT_ID=<merchant-id-sandbox>
+DOKU_TERMINAL_ID=<terminal-id-sandbox>
+DOKU_POSTAL_CODE=<kode-pos-5-digit>
+DOKU_IS_PRODUCTION=false
 ```
 
-Kemudian jalankan:
+Contoh Production memakai nama environment yang sama dengan nilai Production, `DOKU_IS_PRODUCTION=true`, dan origin publik HTTPS. Daftarkan URL notifikasi `https://<domain>/api/payments/doku/notify` di pengaturan QRIS DOKU. Callback diverifikasi dengan signature, lalu server meminta status transaksi langsung ke DOKU sebelum menandai pesanan lunas. Tombol periksa pembayaran juga menggunakan API status DOKU. Untuk menguji Sandbox, gunakan [QRIS Payment Simulator DOKU](https://sandbox.doku.com/qris-simulator/).
 
-```powershell
-node server.js
-```
-
-Daftarkan callback HTTPS publik `https://<domain>/api/payments/notify` pada dashboard akun pembayaran agar status pesanan diperbarui otomatis. Callback lokal `127.0.0.1` tidak dapat dijangkau dari internet; tombol periksa pembayaran tetap menggunakan status API server. Untuk production, gunakan Server Key production dan set `MIDTRANS_IS_PRODUCTION=true`. Client Key tidak diperlukan karena pembayaran memakai Core API dari server dan tidak memuat Snap.js.
+Credential `MIDTRANS_SERVER_KEY`, `MIDTRANS_MERCHANT_ID`, dan `MIDTRANS_IS_PRODUCTION` hanya diperlukan sementara untuk pemeriksaan atau refund pesanan historis Midtrans. Pesanan baru Bacshop tidak lagi dikirim ke Midtrans.
 
 ## Menjalankan di production
 
@@ -58,7 +51,7 @@ Production harus memakai satu proses Node.js pada satu server dengan penyimpanan
 
 Repo menyediakan `Dockerfile` dan Compose untuk menjalankan satu kontainer Bacshop di belakang Caddy. Caddy mengurus TLS otomatis; data Bacshop, sertifikat TLS, dan konfigurasi Caddy memakai volume persisten. DNS domain harus mengarah ke VPS, port TCP 80/443 dan UDP 443 harus dibuka, dan subnet Docker `10.245.17.0/24` harus tidak bertabrakan dengan jaringan VPS.
 
-Salin `deploy/production.env.example` menjadi `deploy/production.env` serta `deploy/caddy.env.example` menjadi `deploy/caddy.env`. Isi domain dan origin HTTPS yang sama, Server Key Production, Merchant ID, dan kode setup admin acak minimal 32 karakter. `deploy/production.env` memuat rahasia dan diabaikan Git; `deploy/caddy.env` hanya memuat nama domain.
+Salin `deploy/production.env.example` menjadi `deploy/production.env` serta `deploy/caddy.env.example` menjadi `deploy/caddy.env`. Isi domain dan origin HTTPS yang sama, konfigurasi DOKU Production, dan kode setup admin acak minimal 32 karakter. `deploy/production.env` memuat rahasia dan diabaikan Git; `deploy/caddy.env` hanya memuat nama domain.
 
 ```sh
 cp deploy/production.env.example deploy/production.env
@@ -82,16 +75,20 @@ BACSHOP_PRODUCTS_FILE=/var/lib/bacshop/products.json
 BACSHOP_UPLOADS_DIR=/var/lib/bacshop/uploads
 BACSHOP_ADMIN_SETUP_CODE=<kode-acak-minimal-32-karakter>
 BACSHOP_PAYMENT_TEST_EMAIL=<email-akun-yang-boleh-menguji-pembayaran>
-MIDTRANS_SERVER_KEY=<server-key-production>
-MIDTRANS_MERCHANT_ID=<merchant-id-production>
-MIDTRANS_IS_PRODUCTION=true
+DOKU_CLIENT_ID=<client-id-production>
+DOKU_CLIENT_SECRET=<client-secret-production>
+DOKU_PRIVATE_KEY_BASE64=<private-key-rsa-production-dalam-base64>
+DOKU_MERCHANT_ID=<merchant-id-production>
+DOKU_TERMINAL_ID=<terminal-id-production>
+DOKU_POSTAL_CODE=<kode-pos-5-digit>
+DOKU_IS_PRODUCTION=true
 ```
 
 Salin `data/products.json` ke `BACSHOP_PRODUCTS_FILE` saat menyiapkan server pertama kali. Pastikan folder data dan unggahan berada pada volume yang tetap ada saat aplikasi diperbarui, dibatasi ke akun proses Bacshop, dan masuk jadwal backup terenkripsi. Simpan kredensial di secret manager atau environment host; jangan masukkan nilainya ke Git, log deployment, tiket, atau chat. `BACSHOP_ADMIN_SETUP_CODE` dipakai satu kali saat membuat akun admin pertama dan tidak dicetak ke log production.
 
 Jika memakai reverse proxy, set `BACSHOP_TRUSTED_PROXY_IPS` hanya ke alamat proxy yang benar-benar tersambung ke Node, dan pastikan proxy menghapus lalu menulis ulang `X-Forwarded-For`. Header tersebut hanya dipakai untuk pembatasan percobaan login; tanpa proxy yang dipercaya, aplikasi mengabaikannya.
 
-Setelah konfigurasi benar, jalankan `npm start`. Startup production gagal dengan pesan yang tidak memuat rahasia jika origin HTTPS, folder persistent yang bisa ditulis, atau kunci Midtrans Production belum disiapkan. Folder data pribadi dibatasi ke akun proses di sistem Unix. `GET /api/health` memberi status hidup dan apakah kunci pembayaran terkonfigurasi; status itu tidak membuktikan QRIS aktif di akun Midtrans. Pada permintaan charge production, server mengirim `X-Override-Notification` menuju `${BACSHOP_PUBLIC_ORIGIN}/api/payments/notify`. [Midtrans mendukung URL notifikasi per transaksi](https://docs.midtrans.com/docs/https-notification-webhooks); callback transaksi Bacshop diarahkan ke Bacshop tanpa mengganti URL global merchant yang mungkin dipakai aplikasi lain. Header ini tidak dikirim untuk pemeriksaan status atau refund. Penerimaan callback tetap harus dibuktikan dengan transaksi nyata.
+Setelah konfigurasi benar, jalankan `npm start`. Startup production memvalidasi origin HTTPS dan penyimpanan persistent. Bila DOKU diaktifkan untuk Production, startup juga menolak konfigurasi DOKU yang belum lengkap atau private key yang tidak valid. Folder data pribadi dibatasi ke akun proses di sistem Unix. `GET /api/health` memberi status hidup dan `paymentConfigured`; nilai `true` menunjukkan konfigurasi server tersedia, bukan bukti QRIS sudah disetujui atau aktif pada akun DOKU. Daftarkan URL notifikasi Bacshop di dashboard DOKU, lalu pastikan callback diterima dan status server cocok sebelum menerima pesanan live.
 
 Produk yang ditandai **Produk uji internal** disembunyikan dari pengunjung biasa dan ditolak lagi oleh server saat pemesanan. Atur `BACSHOP_PAYMENT_TEST_EMAIL` ke satu email akun uji yang sah sebelum membuat produk tersebut. Gunakan hanya untuk memverifikasi integrasi, lalu arsipkan atau hapus setelah pengujian selesai.
 
@@ -105,7 +102,7 @@ Untuk deployment ZIP dari source, set `SCM_DO_BUILD_DURING_DEPLOYMENT=true` dan 
 
 Alternatif jika build Azure tertahan: jalankan `npm ci --omit=dev`, buat ZIP dari `git archive HEAD`, lalu tambahkan hanya `node_modules/` ke ZIP tersebut. Set kedua flag build di atas ke `false` untuk paket yang sudah berisi dependensi produksi. Dependensi saat ini berupa JavaScript; jika menambahkan modul native, paket harus dibangun pada Linux yang sesuai dengan runtime Azure. Jangan mengubah app settings selama deployment masih membangun aplikasi.
 
-Untuk domain apex, buat A record `@` menuju inbound IP App Service serta TXT `asuid` berisi custom domain verification ID. Pada IDwebhost, opsi `SPF (txt)` tersimpan sebagai TXT. Setelah DNS publik terverifikasi, tambahkan hostname `bacshop.id`, terbitkan managed certificate, dan pasang SNI SSL. Aktifkan HTTPS Only dan minimum TLS 1.2, lalu set `BACSHOP_PUBLIC_ORIGIN=https://bacshop.id` agar permintaan akun dan pesanan dari domain tersebut diterima. Server memakai `https://bacshop.id/api/payments/notify` sebagai URL notifikasi khusus setiap transaksi Bacshop.
+Untuk domain apex, buat A record `@` menuju inbound IP App Service serta TXT `asuid` berisi custom domain verification ID. Pada IDwebhost, opsi `SPF (txt)` tersimpan sebagai TXT. Setelah DNS publik terverifikasi, tambahkan hostname `bacshop.id`, terbitkan managed certificate, dan pasang SNI SSL. Aktifkan HTTPS Only dan minimum TLS 1.2, lalu set `BACSHOP_PUBLIC_ORIGIN=https://bacshop.id` agar permintaan akun dan pesanan dari domain tersebut diterima. Daftarkan `https://bacshop.id/api/payments/doku/notify` sebagai URL notifikasi QRIS di dashboard DOKU.
 
 Sebelum migrasi akun Azure, cadangkan seluruh `/home/bacshop-data/` melalui Kudu ZIP API dan pulihkan ke lokasi yang sama pada app tujuan sebelum menjalankan aplikasi. Cadangan berisi data privat; simpan di lokasi yang diabaikan Git dan jangan masukkan ke ZIP source. Verifikasi hasil pemulihan sebelum menghapus resource Bacshop lama.
 
@@ -113,13 +110,13 @@ Sebelum migrasi akun Azure, cadangkan seluruh `/home/bacshop-data/` melalui Kudu
 
 Untuk pilot sementara tanpa biaya compute, aplikasi dapat dijalankan di Azure App Service Linux Free F1 menggunakan Node.js 24 LTS dan hostname HTTPS bawaan `*.azurewebsites.net`. Paket F1 memiliki batas CPU dan penyimpanan yang ketat serta tidak memiliki SLA; paket gratis/shared ditujukan untuk pengembangan dan pengujian, bukan toko live. Jangan menerima pesanan live sebelum hosting, backup, kapasitas, dan kanal pembayaran Production siap.
 
-Saat membuat App Service, pilih Linux, Node 24 LTS, paket App Service F1 di region yang menyediakan F1, dan aktifkan HTTPS Only serta minimum TLS 1.2. Atur startup command menjadi `node deploy/azure-startup.js` dan aktifkan build deployment agar Azure memasang dependensi dari `package-lock.json`. Startup menyalin katalog awal ke `/home/bacshop-data/products.json` hanya pada inisialisasi pertama; perubahan katalog, akun, sesi, pesanan, audit, dan unggahan memakai `/home/bacshop-data/` yang persisten saat restart. Startup tidak menimpa katalog yang sudah ada. Atur app settings `NODE_ENV=production`, `HOST=0.0.0.0`, `BACSHOP_PUBLIC_ORIGIN=https://<nama-app>.azurewebsites.net`, `BACSHOP_DATA_DIR=/home/bacshop-data/private`, `BACSHOP_PRODUCTS_FILE=/home/bacshop-data/products.json`, `BACSHOP_UPLOADS_DIR=/home/bacshop-data/uploads`, `MIDTRANS_IS_PRODUCTION=true`, `MIDTRANS_SERVER_KEY`, dan `BACSHOP_ADMIN_SETUP_CODE` melalui Configuration di Azure; simpan rahasia sebagai app settings dan jangan masukkan ke ZIP atau Git. Port diambil dari `PORT` yang disediakan platform.
+Saat membuat App Service, pilih Linux, Node 24 LTS, paket App Service F1 di region yang menyediakan F1, dan aktifkan HTTPS Only serta minimum TLS 1.2. Atur startup command menjadi `node deploy/azure-startup.js` dan aktifkan build deployment agar Azure memasang dependensi dari `package-lock.json`. Startup menyalin katalog awal ke `/home/bacshop-data/products.json` hanya pada inisialisasi pertama; perubahan katalog, akun, sesi, pesanan, audit, dan unggahan memakai `/home/bacshop-data/` yang persisten saat restart. Startup tidak menimpa katalog yang sudah ada. Atur app settings `NODE_ENV=production`, `HOST=0.0.0.0`, `BACSHOP_PUBLIC_ORIGIN=https://<nama-app>.azurewebsites.net`, `BACSHOP_DATA_DIR=/home/bacshop-data/private`, `BACSHOP_PRODUCTS_FILE=/home/bacshop-data/products.json`, `BACSHOP_UPLOADS_DIR=/home/bacshop-data/uploads`, `DOKU_IS_PRODUCTION=true`, `DOKU_CLIENT_ID`, `DOKU_CLIENT_SECRET`, `DOKU_PRIVATE_KEY_BASE64`, `DOKU_MERCHANT_ID`, `DOKU_TERMINAL_ID`, `DOKU_POSTAL_CODE`, dan `BACSHOP_ADMIN_SETUP_CODE` melalui Configuration di Azure; simpan rahasia sebagai app settings dan jangan masukkan ke ZIP atau Git. Port diambil dari `PORT` yang disediakan platform.
 
-Setelah app hidup, daftarkan `https://<nama-app>.azurewebsites.net/api/payments/notify` sebagai HTTP notification URL Production Midtrans. Endpoint publik dan hostname HTTPS tidak mengaktifkan Core API Production atau QRIS pada akun Midtrans. Periksa `/api/health`, lakukan backup sebelum pembaruan, dan pantau kuota F1; naikkan paket hanya setelah ada persetujuan biaya.
+Setelah app hidup dan DOKU Production disetujui, daftarkan `https://bacshop.id/api/payments/doku/notify` sebagai URL notifikasi QRIS di dashboard DOKU. Periksa `/api/health`, lakukan backup sebelum pembaruan, dan pantau kuota F1; naikkan paket hanya setelah ada persetujuan biaya.
 
-Sebelum menerima pembeli, jalankan `npm test`, lalu cek login admin, pendaftaran buyer, pesanan, QRIS, callback, dan pemenuhan. QRIS dibuat setelah pesanan dikonfirmasi; status lunas hanya berubah setelah respons status/callback Midtrans cocok pada ID merchant, mata uang, nominal, metode QRIS, dan fraud status.
+Sebelum menerima pembeli, verifikasi login admin, pendaftaran buyer, pesanan, QRIS, callback, refund, dan pemenuhan dengan akun serta simulator DOKU yang sesuai. QRIS dibuat setelah pesanan dikonfirmasi; status lunas hanya berubah setelah query DOKU cocok pada merchant, referensi, mata uang, nominal, dan status sukses.
 
-Core API Production dan QRIS dinamis harus aktif pada akun merchant Production. Sandbox aktif secara default, tetapi [Core API Production perlu diminta aktivasinya](https://docs.midtrans.com/docs/custom-interface-core-api), dan status kanal QRIS dikelola pada [dashboard Production Midtrans](https://docs.midtrans.com/docs/payment-methods). Sebelum go-live, ikuti [panduan Production Midtrans](https://docs.midtrans.com/docs/how-do-i-migrate-my-account-from-sandbox-to-production): kirim dan bayar transaksi nyata minimal Rp10.000, lalu pastikan callback pembayaran berhasil diterima. Jika provider mengembalikan `402 Payment channel is not activated`, jangan membuka penjualan live sebelum aktivasi dan transaksi uji berhasil.
+Sebelum go-live, pastikan pendaftaran QRIS merchant DOKU disetujui, identitas merchant dan terminal Production benar, pasangan RSA terdaftar, URL notifikasi publik HTTPS sudah disimpan, dan transaksi uji berhasil dibuat, dibayar, diverifikasi, serta diterima callback-nya. Jika salah satu syarat ini belum siap, jangan aktifkan pembayaran Production.
 
 Konten penjualan tidak mengarang ulasan, jumlah penjualan, atau pesanan. Informasi yang belum dikonfigurasi ditampilkan sebagai belum tersedia, bukan sebagai transaksi nyata.
 
