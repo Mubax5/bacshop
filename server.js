@@ -55,6 +55,9 @@ const USER_SESSIONS_FILE = path.join(PRIVATE_DIR, 'user-sessions.json');
 const ORDERS_FILE = path.join(PRIVATE_DIR, 'orders.json');
 const CMS_FILE = path.join(PRIVATE_DIR, 'storefront.json');
 const AUDIT_FILE = path.join(PRIVATE_DIR, 'audit.json');
+const CHAT_DIR = path.join(PRIVATE_DIR, 'chat');
+const CHAT_IMAGE_DIR = path.join(CHAT_DIR, 'images');
+const chatSendLimits = new Map();
 const UPLOAD_DIR = process.env.BACSHOP_UPLOADS_DIR || path.join(ROOT, 'assets', 'uploads');
 const SESSION_MS = 8 * 60 * 60 * 1000;
 const COOKIE = 'BacshopAdmin';
@@ -1518,6 +1521,158 @@ async function finishGoogleSignIn(req, res, url) {
   } catch { return fail('failed'); }
 }
 
+function chatFile(userId) {
+  return path.join(CHAT_DIR, `${crypto.createHash('sha256').update(userId).digest('hex')}.json`);
+}
+
+function readChat(userId) {
+  return readJson(chatFile(userId), { userId, messages: [], customerRead: 0, adminRead: 0 });
+}
+
+function chatUnread(thread, side) {
+  return thread.messages.filter(message => message.sender !== side && message.sequence > (thread[`${side}Read`] || 0)).length;
+}
+
+function chatPage(thread, side, before) {
+  const cursor = before === null ? Infinity : Number(before);
+  if (before !== null && (!Number.isSafeInteger(cursor) || cursor < 1)) throw Object.assign(new Error('Posisi pesan tidak valid.'), { status: 400 });
+  const eligible = thread.messages.filter(message => message.sequence < cursor);
+  const messages = eligible.slice(-50);
+  return { userId: thread.userId, messages, hasMore: eligible.length > messages.length,
+    oldestSequence: messages[0]?.sequence || null, unread: chatUnread(thread, side),
+    otherRead: thread[`${side === 'customer' ? 'admin' : 'customer'}Read`] || 0 };
+}
+
+function chatContext(input, userId) {
+  if (input === undefined || input === null) return null;
+  if (!input || typeof input !== 'object' || Array.isArray(input)) throw Object.assign(new Error('Lampiran produk tidak valid.'), { status: 400 });
+  const user = readUsers().find(entry => entry.id === userId);
+  if (input.orderId) {
+    const order = readOrders().find(entry => entry.id === input.orderId && entry.userId === userId);
+    if (!order) throw Object.assign(new Error('Pesanan tidak ditemukan.'), { status: 404 });
+    if (input.itemIndex !== undefined && (!Number.isInteger(input.itemIndex) || input.itemIndex < 0 || !order.items?.[input.itemIndex])) throw Object.assign(new Error('Produk tidak ada di pesanan ini.'), { status: 400 });
+    const item = input.itemIndex !== undefined ? order.items[input.itemIndex] : order.items?.find(entry => entry.productId === input.productId);
+    if (input.productId && !item) throw Object.assign(new Error('Produk tidak ada di pesanan ini.'), { status: 400 });
+    if (input.productId && item.productId !== input.productId) throw Object.assign(new Error('Produk tidak ada di pesanan ini.'), { status: 400 });
+    const product = item && readProducts().find(entry => entry.id === item.productId);
+    return { orderId: order.id, productId: item?.productId || null,
+      name: item?.name || (order.kind === 'reseller-plan' ? 'Paket reseller' : 'Pesanan'),
+      image: product?.image || '', slug: product?.slug || '', quantity: item?.quantity || null,
+      price: item?.unitPrice ?? order.total,
+      specifications: (item?.specifications || []).map(entry => `${entry.name}: ${entry.label}`).join(' · ') };
+  }
+  const product = readProducts().find(entry => entry.id === input.productId && !entry.archived && canAccessInternalTestProduct(user, entry));
+  if (!product) throw Object.assign(new Error('Produk tidak ditemukan.'), { status: 404 });
+  const visible = publicProduct(product, user);
+  return { productId: visible.id, name: visible.name, image: visible.image || '', slug: visible.slug, price: visible.price };
+}
+
+async function sendChat(req, res, userId, side) {
+  const body = await readBody(req, 15 * 1024 * 1024);
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return json(res, 400, { error: 'Data pesan tidak valid.' });
+  if (typeof body.clientMessageId !== 'string' || !/^[A-Za-z0-9-]{16,80}$/.test(body.clientMessageId)) return json(res, 400, { error: 'Identitas pesan tidak valid.' });
+  const thread = readChat(userId);
+  const previous = thread.messages.find(message => message.sender === side && message.clientMessageId === body.clientMessageId);
+  if (previous) return json(res, 200, { message: previous });
+  if (body.text !== undefined && typeof body.text !== 'string') return json(res, 400, { error: 'Pesan harus berupa teks.' });
+  const text = (body.text || '').trim();
+  if (text.length > 4000) return json(res, 400, { error: 'Pesan maksimal 4.000 karakter.' });
+  if (body.images !== undefined && !Array.isArray(body.images) || (body.images || []).length > 3) return json(res, 400, { error: 'Maksimal 3 gambar per pesan.' });
+  const context = chatContext(body.context, userId);
+  let totalBytes = 0;
+  const images = (body.images || []).map(image => {
+    if (!image || typeof image.data !== 'string' || image.data.length % 4 || !/^[A-Za-z0-9+/]*={0,2}$/.test(image.data)) throw Object.assign(new Error('Data gambar tidak valid.'), { status: 400 });
+    const buffer = Buffer.from(image.data, 'base64');
+    totalBytes += buffer.length;
+    const extension = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp' }[image.mimeType];
+    if (!extension || !uploadedImage(buffer, image.mimeType) || !buffer.length) throw Object.assign(new Error('Gunakan gambar PNG, JPG, atau WebP yang valid.'), { status: 400 });
+    if (buffer.length > 5 * 1024 * 1024 || totalBytes > 10 * 1024 * 1024) throw Object.assign(new Error('Maksimal 5 MB per gambar dan 10 MB per pesan.'), { status: 413 });
+    const id = crypto.randomUUID();
+    // The owner hash is part of the authenticated URL, never a public uploads path.
+    const owner = path.basename(chatFile(userId), '.json');
+    return { buffer, file: `${id}.${extension}`, metadata: { id, mimeType: image.mimeType, url: `/api/chat/images/${owner}/${id}`, file: `${id}.${extension}` } };
+  });
+  if (!text && !context && !images.length) return json(res, 400, { error: 'Tulis pesan atau tambahkan lampiran.' });
+  const now = Date.now();
+  for (const [key, entry] of chatSendLimits) if (entry.until <= now) chatSendLimits.delete(key);
+  const key = `${side}:${userId}`;
+  const limit = chatSendLimits.get(key) || { count: 0, until: now + 60000 };
+  if (limit.count >= 30) return json(res, 429, { error: 'Terlalu banyak pesan. Tunggu sebentar sebelum mengirim lagi.' });
+  limit.count += 1;
+  chatSendLimits.set(key, limit);
+  fs.mkdirSync(CHAT_IMAGE_DIR, { recursive: true, mode: 0o700 });
+  const message = { id: crypto.randomUUID(), clientMessageId: body.clientMessageId,
+    sequence: (thread.messages.at(-1)?.sequence || 0) + 1, sender: side, text, context,
+    images: images.map(image => image.metadata), createdAt: new Date(now).toISOString() };
+  const written = [];
+  try {
+    for (const image of images) {
+      const file = path.join(CHAT_IMAGE_DIR, image.file);
+      fs.writeFileSync(file, image.buffer, { mode: 0o600, flag: 'wx' });
+      written.push(file);
+    }
+    thread.messages.push(message);
+    // Sending is not a read receipt: the other conversation may not be visible yet.
+    writeJsonAtomic(chatFile(userId), thread);
+  } catch (error) {
+    for (const file of written) try { fs.unlinkSync(file); } catch { /* Preserve original error. */ }
+    throw error;
+  }
+  return json(res, 201, { message });
+}
+
+async function handleChatApi(req, res, url) {
+  const isAdmin = url.pathname.startsWith('/api/admin/chat');
+  const admin = requireAdmin(req);
+  const user = activeUser(req);
+  if (isAdmin && !admin || !isAdmin && !user && !admin) return json(res, 401, { error: 'Masuk untuk membuka chat.' });
+  const imageMatch = url.pathname.match(/^\/api\/chat\/images\/([a-f0-9]{64})\/([a-f0-9-]{36})$/);
+  if (imageMatch && ['GET', 'HEAD'].includes(req.method)) {
+    const thread = readJson(path.join(CHAT_DIR, `${imageMatch[1]}.json`), null);
+    if (!thread || !admin && thread.userId !== user?.id) return json(res, 404, { error: 'Gambar tidak ditemukan.' });
+    const image = thread.messages.flatMap(message => message.images).find(entry => entry.id === imageMatch[2]);
+    if (!image || !/^[a-f0-9-]{36}\.(png|jpg|webp)$/.test(image.file)) return json(res, 404, { error: 'Gambar tidak ditemukan.' });
+    let buffer;
+    try { buffer = fs.readFileSync(path.join(CHAT_IMAGE_DIR, image.file)); } catch { return json(res, 404, { error: 'Gambar tidak ditemukan.' }); }
+    res.writeHead(200, { 'Content-Type': image.mimeType, 'Content-Length': buffer.length,
+      'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff',
+      'Cross-Origin-Resource-Policy': 'same-origin', 'Content-Disposition': 'inline' });
+    return res.end(req.method === 'HEAD' ? undefined : buffer);
+  }
+  if (isAdmin && req.method === 'GET' && url.pathname === '/api/admin/chat') {
+    const users = readUsers();
+    const files = fs.existsSync(CHAT_DIR) ? fs.readdirSync(CHAT_DIR).filter(file => /^[a-f0-9]{64}\.json$/.test(file)) : [];
+    const conversations = files.map(file => readJson(path.join(CHAT_DIR, file), null)).filter(thread => thread?.messages.length).map(thread => {
+      const customer = users.find(entry => entry.id === thread.userId);
+      const last = thread.messages.at(-1);
+      return { userId: thread.userId, customer: { name: customer?.name || 'Pelanggan', avatarUrl: customer?.avatarUrl || '' },
+        lastMessage: { text: last.text || last.context?.name || 'Gambar', createdAt: last.createdAt }, unread: chatUnread(thread, 'admin') };
+    }).sort((first, second) => second.lastMessage.createdAt.localeCompare(first.lastMessage.createdAt));
+    return json(res, 200, { conversations, unread: conversations.reduce((sum, thread) => sum + thread.unread, 0) });
+  }
+  const match = isAdmin ? url.pathname.match(/^\/api\/admin\/chat\/([a-f0-9-]{36})(?:\/(messages|read))?$/) : url.pathname.match(/^\/api\/chat(?:\/(messages|read|unread))?$/);
+  if (!match) return json(res, 404, { error: 'Chat tidak ditemukan.' });
+  const userId = isAdmin ? match[1] : user?.id;
+  if (!userId || isAdmin && !readUsers().some(entry => entry.id === userId)) return json(res, 404, { error: 'Pelanggan tidak ditemukan.' });
+  const action = isAdmin ? match[2] : match[1];
+  const side = isAdmin ? 'admin' : 'customer';
+  if (req.method === 'GET' && action === 'unread') return json(res, 200, { unread: chatUnread(readChat(userId), side) });
+  if (req.method === 'GET' && !action) return json(res, 200, chatPage(readChat(userId), side, url.searchParams.get('before')));
+  if (req.method === 'POST' && action === 'messages') return sendChat(req, res, userId, side);
+  if (req.method === 'POST' && action === 'read') {
+    const body = await readBody(req);
+    if (!body || typeof body !== 'object' || Array.isArray(body)) return json(res, 400, { error: 'Data pesan tidak valid.' });
+    const thread = readChat(userId);
+    const sequence = Number(body.sequence);
+    if (!Number.isInteger(sequence) || sequence < 1 || !thread.messages.some(message => message.sequence === sequence)) return json(res, 400, { error: 'Pesan tidak ditemukan.' });
+    thread[`${side}Read`] = Math.max(thread[`${side}Read`] || 0, sequence);
+    fs.mkdirSync(CHAT_DIR, { recursive: true, mode: 0o700 });
+    writeJsonAtomic(chatFile(userId), thread);
+    return json(res, 200, { unread: chatUnread(thread, side) });
+  }
+  return json(res, 405, { error: 'Permintaan chat tidak didukung.' });
+}
+
 async function handleApi(req, res, url) {
   if (req.method === 'GET' && url.pathname === '/api/auth/google/start') return startGoogleSignIn(req, res, url);
   if (req.method === 'GET' && url.pathname === GOOGLE_CALLBACK) return finishGoogleSignIn(req, res, url);
@@ -1525,6 +1680,7 @@ async function handleApi(req, res, url) {
   if (req.method === 'POST' && url.pathname === MIDTRANS_NOTIFY_PATH) return handleMidtransNotify(req, res);
   if (req.method === 'POST' && url.pathname === DOKU_NOTIFY_PATH) return handleDokuNotify(req, res);
   if (['POST', 'PUT', 'DELETE'].includes(req.method) && !sameOrigin(req)) return json(res, 403, { error: 'Permintaan hanya dapat dimulai dari situs Bacshop.' });
+  if (url.pathname === '/api/chat' || url.pathname.startsWith('/api/chat/') || url.pathname === '/api/admin/chat' || url.pathname.startsWith('/api/admin/chat/')) return handleChatApi(req, res, url);
   if (req.method === 'GET' && url.pathname === '/api/health') return json(res, 200, { status: 'ok', paymentProvider: 'DOKU', paymentConfigured: Boolean(dokuConfig()) });
   if (req.method === 'GET' && url.pathname === '/api/auth/session') {
     const user = activeUser(req);

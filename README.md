@@ -16,6 +16,15 @@ Data akun, sesi, pesanan, konten toko, dan audit admin disimpan di `.bacshop-pri
 - Area admin terpisah untuk mengelola produk, kategori, banner placeholder, promo, syarat reseller, dan pemenuhan pesanan.
 - QRIS dinamis DOKU dibuat khusus untuk setiap pesanan melalui SNAP API. Hanya gambar QRIS yang tampil di halaman pembayaran; status lunas diverifikasi kembali lewat API status DOKU. Callback bertanda tangan membantu memperbarui status, tetapi tidak menggantikan pemeriksaan server. Konfirmasi manual dan QR statis tidak dipakai.
 
+### Chat pelanggan–admin
+
+- Pelanggan membuka `/#/chat` dari ikon chat, tombol **Tanya produk**, atau **Chat tentang pesanan**. Admin membalas dari `/#/admin/chat`; daftar percakapan menampilkan pesan terakhir dan jumlah pesan belum dibaca.
+- Produk katalog dan produk dalam pesanan sendiri bisa dilampirkan. Nama, harga, spesifikasi, dan pemilik pesanan diperiksa oleh server; lampiran tidak mempercayai nominal dari browser.
+- Gambar PNG/JPG/WebP dapat dikirim melalui pemilih file, paste clipboard, dan drag-and-drop. Maksimal 3 gambar per pesan, 5 MB per gambar, dan 10 MB total. Enter mengirim, Shift+Enter membuat baris baru.
+- Percakapan tersimpan di `BACSHOP_DATA_DIR/chat/` (default `.bacshop-private/chat/`), termasuk gambar privat di subfolder `images/`. Hanya pemilik percakapan dan admin yang bisa mengaksesnya. Backup folder data ini bersama data akun/pesanan; jangan masukkan gambar chat ke aset publik atau Git.
+- Pesan memakai waktu UTC dari server dan urutan pesan tersendiri. Jam dan pemisah hari/tanggal mengikuti zona waktu perangkat yang membukanya. Pemisah tanggal hanya berasal dari pesan yang berhasil tersimpan, bukan draft.
+- Pesan baru diperiksa setiap 3 detik saat halaman chat terlihat; badge navigasi diperiksa setiap 10 detik. Draft tetap utuh saat polling. Pengiriman dapat diulang tanpa membuat pesan ganda, dan riwayat lama tersedia melalui **Muat pesan sebelumnya**. Batas pengiriman 30 pesan/menit per sisi percakapan.
+
 ### Kredensial pembayaran
 
 Checkout baru memakai DOKU. Salin `.env.example` menjadi `.env`, isi environment server, lalu mulai ulang aplikasi. File `.env` diabaikan Git; jangan bagikan atau commit file itu.

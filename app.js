@@ -89,6 +89,10 @@
   let checkoutItemsOverride = readCheckoutOverride();
   let previewContext = null;
   let adminRouteFocusAfterNavigation = false;
+  let chatPollTimer;
+  let chatView = null;
+  let chatUnreadTimer;
+  let chatUnreadCount = 0;
 
   const rupiah = (value) => new Intl.NumberFormat('id-ID', {
     style: 'currency', currency: 'IDR', maximumFractionDigits: 0,
@@ -315,13 +319,13 @@
         <a class="brand" href="#/" aria-label="Bacshop beranda">Bacshop</a>
         ${headerSearch('desktop', query)}
         <div class="header-actions">
-          ${adminPreviewMode ? '' : `<a class="header-link" href="#/program-reseller">Program reseller</a><a class="icon-button" href="#/keranjang" aria-label="Keranjang belanja">${feather('shopping-cart')}<span class="cart-count" data-cart-count ${count ? '' : 'hidden'}>${count}</span></a>`}
+          ${adminPreviewMode ? '' : `<a class="header-link" href="#/program-reseller">Program reseller</a><a class="icon-button chat-entry" href="#/chat" aria-label="Chat Bacshop">${feather('message-circle')}<span class="chat-unread-badge" data-chat-unread hidden></span></a><a class="icon-button" href="#/keranjang" aria-label="Keranjang belanja">${feather('shopping-cart')}<span class="cart-count" data-cart-count ${count ? '' : 'hidden'}>${count}</span></a>`}
           ${accountControl}
         </div>
       </div>
       <div class="mobile-top">
         <a class="brand" href="#/" aria-label="Bacshop beranda">Bacshop</a>
-        ${adminPreviewMode ? '' : `<div class="mobile-tools"><a class="icon-button" href="#/keranjang" aria-label="Keranjang belanja">${feather('shopping-cart')}<span class="cart-count" data-cart-count ${count ? '' : 'hidden'}>${count}</span></a><a class="mobile-account-link" href="${accountHref}" aria-label="${currentUser ? `Akun ${escapeHtml(currentUser.name)}` : 'Masuk atau daftar'}">${currentUser ? avatarMark(currentUser) : feather('user')}</a></div>`}
+        ${adminPreviewMode ? '' : `<div class="mobile-tools"><a class="icon-button chat-entry" href="#/chat" aria-label="Chat Bacshop">${feather('message-circle')}<span class="chat-unread-badge" data-chat-unread hidden></span></a><a class="icon-button" href="#/keranjang" aria-label="Keranjang belanja">${feather('shopping-cart')}<span class="cart-count" data-cart-count ${count ? '' : 'hidden'}>${count}</span></a><a class="mobile-account-link" href="${accountHref}" aria-label="${currentUser ? `Akun ${escapeHtml(currentUser.name)}` : 'Masuk atau daftar'}">${currentUser ? avatarMark(currentUser) : feather('user')}</a></div>`}
       </div>
       <div class="mobile-search-row">${headerSearch('mobile', query)}</div>
     </header>
@@ -331,7 +335,7 @@
       <div class="footer-brand-col"><a class="brand footer-brand" href="#/">Bacshop</a><p class="footer-summary">Periksa detail produk dan ketentuan sebelum membeli.</p></div>
       <div class="footer-col"><h3>Belanja</h3><a href="#/kategori/semua">Semua produk</a><a href="#/kategori/ai">AI & produktivitas</a><a href="#/kategori/streaming">Streaming</a><a href="#/promo">Promo</a></div>
       <div class="footer-col"><h3>Bacshop</h3><a href="#/program-reseller">Program reseller</a><a href="#/faq">FAQ</a><a href="#/privasi">Kebijakan privasi</a><a href="#/ketentuan-layanan">Ketentuan layanan</a><a href="https://t.me/Mubacs" target="_blank" rel="noopener noreferrer">Bantuan · Telegram @Mubacs</a></div>
-      ${adminPreviewMode ? '<div class="footer-col"><h3>Pratinjau</h3><a href="#/admin">Kembali ke admin</a><p class="footer-preview-note">Halaman akun dan pesanan tidak tersedia dalam pratinjau.</p></div>' : '<div class="footer-col"><h3>Akun</h3><a href="#/akun">Profil</a><a href="#/pesanan">Pesanan</a><a href="#/keranjang">Keranjang</a><a href="#/masuk">Masuk</a></div>'}
+      ${adminPreviewMode ? '<div class="footer-col"><h3>Pratinjau</h3><a href="#/admin">Kembali ke admin</a><p class="footer-preview-note">Halaman akun dan pesanan tidak tersedia dalam pratinjau.</p></div>' : '<div class="footer-col"><h3>Akun</h3><a href="#/chat">Chat Bacshop</a><a href="#/akun">Profil</a><a href="#/pesanan">Pesanan</a><a href="#/keranjang">Keranjang</a><a href="#/masuk">Masuk</a></div>'}
     </div><div class="footer-bottom"><span>© Bacshop</span><span>Periksa detail produk dan ketentuan sebelum membayar.</span></div></footer>
     ${adminPreviewMode ? `<nav class="mobile-bottom admin-preview-bottom" aria-label="Navigasi pratinjau"><a class="mobile-nav-link" href="#/kategori/semua">${feather('grid')}<span>Belanja</span></a><a class="mobile-nav-link" href="#/admin">${feather('arrow-right')}<span>Kembali ke admin</span></a></nav>` : `<nav class="mobile-bottom" aria-label="Navigasi mobile">
       <a class="mobile-nav-link" href="#/"${activeNav(path, 'Beranda')}>${feather('home')}<span>Beranda</span></a>
@@ -554,7 +558,7 @@
           <div class="detail-quantity-row"><label class="detail-quantity-field"><span>Jumlah${minimumQuantity > 1 ? ` · minimum ${minimumQuantity} unit` : ''}</span><input type="number" name="quantity" min="${minimumQuantity}" max="${Math.max(1, stockLimit)}" value="${initialQuantity}" inputmode="numeric" data-detail-quantity required ${purchaseBlocked ? 'disabled' : ''} /></label><span class="detail-stock-note">${product.stockAvailable === null || product.stockAvailable === undefined ? 'Stok tersedia' : `Stok ${Number(product.stockAvailable)} unit`}</span></div>
           <div class="detail-purchase-total"><span>Total</span><strong data-detail-total>${rupiah(product.price * initialQuantity)}</strong></div>
           <div class="detail-actions">${adminPreviewMode ? '<span class="button button-disabled" aria-disabled="true">Mode pratinjau</span>' : purchaseBlocked ? `<button class="button button-disabled" type="button" disabled>${escapeHtml(unavailableReason)}</button>` : `<button class="button button-primary" type="submit" data-purchase-action="buy" disabled>Beli sekarang</button><button class="button detail-cart-action" type="submit" data-purchase-action="cart" disabled>Tambah ke keranjang</button>`}</div>
-          <p class="detail-purchase-error" data-detail-purchase-error role="status" aria-live="polite" hidden></p>
+          ${adminPreviewMode ? '' : `<a class="detail-chat-link" href="#/chat?product=${encodeURIComponent(product.id)}">${feather('message-circle')}Tanya produk</a>`}<p class="detail-purchase-error" data-detail-purchase-error role="status" aria-live="polite" hidden></p>
         </form></aside></div></section>
       <section class="section">${sectionHead('Pilihan lainnya','Jelajahi produk lain dari toko.') }<div class="product-grid">${PRODUCTS.filter((item) => item.id !== product.id).slice(0, 5).map(productCard).join('')}</div></section>`;
   }
@@ -650,7 +654,7 @@
     const pages = {
       '/bantuan': { title: 'Pusat bantuan', intro: 'Periksa detail produk atau buka pertanyaan umum.', rows: [['Aktivasi','Cara dan estimasi proses dicantumkan pada setiap produk.'],['Pesanan','Status pembayaran dan pemenuhan ditampilkan terpisah pada detail pesanan.'],['FAQ','Buka FAQ untuk jawaban ringkas.']] },
       '/privasi': { title: 'Kebijakan privasi', intro: 'Informasi yang Bacshop simpan dan cara menggunakannya untuk menjalankan toko.', sections: [
-        { title: 'Data yang kami simpan', body: 'Saat kamu memakai Bacshop, sistem menyimpan nama dan email akun, perubahan profil yang kamu kirim, serta rincian pesanan dan status pembayarannya. Keranjang disimpan di browser yang kamu pakai.' },
+        { title: 'Data yang kami simpan', body: 'Saat kamu memakai Bacshop, sistem menyimpan nama dan email akun, perubahan profil yang kamu kirim, serta rincian pesanan dan status pembayarannya. Jika kamu memakai chat, pesan, gambar, dan lampiran produk atau pesanan disimpan untuk percakapan dengan admin. Keranjang disimpan di browser yang kamu pakai.' },
         { title: 'Untuk apa data digunakan', body: 'Data akun dipakai untuk masuk, menampilkan profil, memproses pesanan, mengirim produk, mengelola akses harga reseller, dan menjawab permintaan bantuan.' },
         { title: 'Masuk dengan Google', body: 'Jika kamu memilih masuk dengan Google, Bacshop menerima nama, alamat email yang terverifikasi, foto profil jika tersedia, dan ID akun Google untuk mengenali akunmu. Data ini dipakai untuk login dan profil Bacshop. Bacshop tidak meminta akses Gmail, Drive, kontak, atau kata sandi Google. Token Google dipakai sementara untuk memverifikasi login dan tidak disimpan sebagai data akun.' },
         { title: 'Data teknis', body: 'Alamat IP koneksi dipakai sementara untuk membatasi percobaan login. Nilai ini tidak disimpan sebagai bagian dari profil akun atau pesanan.' },
@@ -660,6 +664,7 @@
       '/data-pribadi': { title: 'Penggunaan data pribadi', intro: 'Ringkasan jenis data, tujuan pemrosesan, dan cara mengajukan permintaan.', sections: [
         { title: 'Data akun dan profil', body: 'Nama, email, foto profil jika tersedia, dan hash kata sandi jika kamu memakai login email. Untuk login Google, Bacshop menyimpan ID akun Google sebagai pengenal akun. Kata sandi asli dan kata sandi Google tidak ditampilkan atau disimpan.' },
         { title: 'Data transaksi', body: 'Pesanan berisi produk, jumlah, nominal, waktu, status pembayaran, dan referensi transaksi yang diperlukan untuk memeriksa pembayaran serta menyelesaikan layanan.' },
+        { title: 'Percakapan dengan admin', body: 'Pesan, gambar yang kamu kirim, serta lampiran produk dan pesanan dapat dibuka oleh akunmu dan admin Bacshop untuk menangani pertanyaan. Gambar chat tidak tersedia sebagai unggahan publik.' },
         { title: 'Pihak pemroses pembayaran', body: 'Penyedia pembayaran menerima data transaksi yang diperlukan untuk membuat QRIS dan memberi tahu Bacshop saat pembayaran berhasil. Aplikasi pembayaran yang kamu gunakan juga memiliki ketentuan privasinya sendiri.' },
         { title: 'Akses dan koreksi', body: 'Kamu dapat meminta salinan atau koreksi informasi akun melalui admin Bacshop. Sertakan email akun dan jelaskan permintaannya; jangan kirim kata sandi, PIN, OTP, atau data login aplikasi pembayaran.' },
       ] },
@@ -781,7 +786,7 @@
     const checkStatusButton = canCheckRefund
       ? '<button class="button button-primary" type="button" data-refresh-order>Periksa refund</button>'
       : canCheckPayment ? '<button class="button button-primary" type="button" data-refresh-order>Periksa pembayaran</button>' : '';
-    return `<nav class="breadcrumbs" aria-label="Breadcrumb"><a href="#/">Beranda</a><span aria-hidden="true">›</span><a href="#/pesanan">Pesanan</a><span aria-hidden="true">›</span><span>${escapeHtml(order.id)}</span></nav><section class="page-panel order-detail-page"><div class="order-detail-heading"><div><span class="product-category">${escapeHtml(order.id)}</span><h1>${order.kind === 'reseller-plan' ? 'Detail paket reseller' : 'Pesanan dikonfirmasi'}</h1><p>${new Date(order.createdAt).toLocaleString('id-ID')}</p></div><span class="status-pill ${detailStatusClass}">${detailStatus}</span></div>${checkoutStepsMarkup(3, isPaid)}<div class="order-detail-grid"><div><section class="order-detail-card"><h2>Rincian</h2><ul class="term-list">${details}</ul><div class="summary-total"><span>Total pesanan</span><strong>${rupiah(order.total)}</strong></div></section><section class="order-detail-card"><h2>Langkah berikutnya</h2><p>${isRefundPending ? 'Pengembalian dana penuh sedang diproses.' : isPaid ? 'Pembayaran sudah terverifikasi. Pesanan akan diproses sesuai keterangan produk.' : hasQr ? 'Selesaikan pembayaran dengan QRIS di samping.' : 'Buat QRIS dinamis untuk pesanan ini, lalu bayar sesuai nominal yang tertera.'}</p></section></div><aside class="order-payment-card ${isPaid && !isRefundPending ? 'is-paid' : ''}" data-payment-order="${escapeHtml(order.id)}" data-payment-poll="${shouldPollStatus ? 'true' : 'false'}"><h2>${isRefundPending ? 'Refund berjalan' : isPaid ? 'Pembayaran berhasil' : isRefunded ? 'Status pesanan' : hasQr ? 'Bayar dengan QRIS' : 'Pembayaran'}</h2>${qr}${expires}${paymentMessage}<strong class="payment-amount">${rupiah(order.total)}</strong>${paymentAction}${checkStatusButton}${isPlan ? `<details class="order-terms"><summary>Syarat paket reseller</summary><p>${escapeHtml(order.resellerTerms || '')}</p></details>` : ''}</aside></div><a class="text-link" href="#/pesanan">Kembali ke pesanan</a></section>`;
+    return `<nav class="breadcrumbs" aria-label="Breadcrumb"><a href="#/">Beranda</a><span aria-hidden="true">›</span><a href="#/pesanan">Pesanan</a><span aria-hidden="true">›</span><span>${escapeHtml(order.id)}</span></nav><section class="page-panel order-detail-page"><div class="order-detail-heading"><div><span class="product-category">${escapeHtml(order.id)}</span><h1>${order.kind === 'reseller-plan' ? 'Detail paket reseller' : 'Pesanan dikonfirmasi'}</h1><p>${new Date(order.createdAt).toLocaleString('id-ID')}</p></div><span class="status-pill ${detailStatusClass}">${detailStatus}</span></div>${checkoutStepsMarkup(3, isPaid)}<div class="order-detail-grid"><div><section class="order-detail-card"><h2>Rincian</h2><ul class="term-list">${details}</ul><div class="summary-total"><span>Total pesanan</span><strong>${rupiah(order.total)}</strong></div></section><section class="order-detail-card"><h2>Langkah berikutnya</h2><p>${isRefundPending ? 'Pengembalian dana penuh sedang diproses.' : isPaid ? 'Pembayaran sudah terverifikasi. Pesanan akan diproses sesuai keterangan produk.' : hasQr ? 'Selesaikan pembayaran dengan QRIS di samping.' : 'Buat QRIS dinamis untuk pesanan ini, lalu bayar sesuai nominal yang tertera.'}</p></section></div><aside class="order-payment-card ${isPaid && !isRefundPending ? 'is-paid' : ''}" data-payment-order="${escapeHtml(order.id)}" data-payment-poll="${shouldPollStatus ? 'true' : 'false'}"><h2>${isRefundPending ? 'Refund berjalan' : isPaid ? 'Pembayaran berhasil' : isRefunded ? 'Status pesanan' : hasQr ? 'Bayar dengan QRIS' : 'Pembayaran'}</h2>${qr}${expires}${paymentMessage}<strong class="payment-amount">${rupiah(order.total)}</strong>${paymentAction}${checkStatusButton}${isPlan ? `<details class="order-terms"><summary>Syarat paket reseller</summary><p>${escapeHtml(order.resellerTerms || '')}</p></details>` : ''}</aside></div><div class="order-chat-actions"><a class="button" href="#/chat?order=${encodeURIComponent(order.id)}">${feather('message-circle')}Chat tentang pesanan</a><a class="text-link" href="#/pesanan">Kembali ke pesanan</a></div></section>`;
   }
 
   function renderCheckoutPage() {
@@ -817,6 +822,11 @@
   }
 
   async function renderCustomerRoute(path, params) {
+    if (path === '/chat') {
+      if (!currentUser) { window.location.hash = `#/masuk?next=${encodeURIComponent(`/chat?${params}`)}`; return ''; }
+      try { return await renderChatPage(false, '', params); }
+      catch (failure) { return `<section class="page-panel"><div class="empty-state"><h1>Chat belum dapat dibuka</h1><p>${escapeHtml(failure.message)}</p><button class="button button-primary" type="button" data-chat-retry>Coba lagi</button><a class="text-link" href="#/chat">Buka chat tanpa lampiran</a></div></section>`; }
+    }
     if (path === '/masuk' || path === '/daftar') return renderAuthPage(path, params);
     if (path === '/akun' || path === '/akun/profil') return renderAccountPage();
     if (path === '/pesanan') {
@@ -834,6 +844,282 @@
       return renderCheckoutPage();
     }
     return null;
+  }
+
+  function chatContextMarkup(context, draft = false) {
+    if (!context) return '';
+    const orderLink = context.orderId ? `#/pesanan/${encodeURIComponent(context.orderId)}` : '';
+    const href = chatView?.side === 'admin' && context.orderId ? '#/admin/pesanan' : orderLink || (context.slug ? `#/produk/${encodeURIComponent(context.slug)}` : '');
+    const content = `${context.image ? `<img src="${escapeHtml(context.image)}" alt="" />` : `<span class="chat-product-placeholder">${feather('package')}</span>`}<span><small>${context.orderId ? `Pesanan ${escapeHtml(context.orderId)}` : 'Produk'}</small><strong>${escapeHtml(context.name)}</strong>${context.specifications ? `<small>${escapeHtml(context.specifications)}</small>` : ''}<span>${context.quantity ? `${context.quantity} × ` : ''}${rupiah(context.price || 0)}</span></span>`;
+    return `<div class="chat-product-card">${!draft && href ? `<a href="${escapeHtml(href)}">${content}</a>` : `<div>${content}</div>`}${draft ? `<button class="chat-tool" type="button" data-chat-remove-context aria-label="Hapus lampiran produk">${feather('x')}</button>` : ''}</div>`;
+  }
+
+  function chatMessagesMarkup(view) {
+    const messages = view.page.messages;
+    if (!messages.length) return '<div class="chat-empty"><h2>Mulai percakapan</h2><p>Tanyakan produk atau sertakan pesanan yang perlu dibantu.</p></div>';
+    let day = '';
+    return `${view.page.hasMore ? '<button class="chat-older" type="button" data-chat-older>Muat pesan sebelumnya</button>' : ''}${messages.map(message => {
+      const key = ChatTime.dayKey(message.createdAt);
+      const divider = key !== day ? `<div class="chat-day"><time datetime="${escapeHtml(message.createdAt)}">${escapeHtml(ChatTime.day(message.createdAt))}</time></div>` : '';
+      day = key;
+      const own = message.sender === view.side;
+      return `${divider}<article class="chat-message ${own ? 'is-own' : ''}" data-chat-sequence="${message.sequence}"><div class="chat-bubble">${chatContextMarkup(message.context)}${message.images.length ? `<div class="chat-message-images">${message.images.map((image, index) => `<a href="${escapeHtml(image.url)}" target="_blank" rel="noopener noreferrer" aria-label="Buka gambar ${index + 1}"><img src="${escapeHtml(image.url)}" alt="Lampiran gambar ${index + 1}" loading="lazy" /></a>`).join('')}</div>` : ''}${message.text ? `<p class="chat-message-text">${escapeHtml(message.text)}</p>` : ''}<div class="chat-message-meta"><time datetime="${escapeHtml(message.createdAt)}" title="${escapeHtml(ChatTime.full(message.createdAt))}">${escapeHtml(ChatTime.clock(message.createdAt))}</time>${own ? `<span>${message.sequence <= view.page.otherRead ? 'Dibaca' : 'Terkirim'}</span>` : ''}</div></div></article>`;
+    }).join('')}`;
+  }
+
+  function chatInboxMarkup(conversations, selected) {
+    return conversations.map(thread => `<a class="chat-inbox-row ${selected === thread.userId ? 'is-selected' : ''}" href="#/admin/chat/${encodeURIComponent(thread.userId)}" data-chat-customer="${escapeHtml(thread.customer.name.toLocaleLowerCase('id-ID'))}">${avatarMark(thread.customer)}<span class="chat-inbox-copy"><strong>${escapeHtml(thread.customer.name)}</strong><small>${escapeHtml(thread.lastMessage.text)}</small></span><span class="chat-inbox-meta"><time title="${escapeHtml(ChatTime.full(thread.lastMessage.createdAt))}">${escapeHtml(ChatTime.clock(thread.lastMessage.createdAt))}</time>${thread.unread ? `<span class="chat-unread-badge">${thread.unread}</span>` : ''}</span></a>`).join('') || '<p class="chat-inbox-empty">Belum ada percakapan.</p>';
+  }
+
+  async function renderChatPage(admin, selected, params, catalog = PRODUCTS, orders = []) {
+    const route = window.location.hash;
+    const inbox = admin ? await requestApi('/api/admin/chat') : null;
+    if (admin && selected && !inbox.conversations.some(thread => thread.userId === selected) && !orders.some(order => order.userId === selected)) throw new Error('Pelanggan tidak ditemukan.');
+    const base = admin ? selected ? `/api/admin/chat/${encodeURIComponent(selected)}` : '' : '/api/chat';
+    const page = base ? await requestApi(base) : null;
+    const view = { base, side: admin ? 'admin' : 'customer', route, page, catalog, orders, inbox, selected,
+      context: null, images: [], sending: false, retry: null, readSequence: 0 };
+    if (!admin && params.get('order')) {
+      const result = await requestApi(`/api/orders/${encodeURIComponent(params.get('order'))}`);
+      const order = result.order;
+      const itemIndex = params.get('product') ? order.items?.findIndex(entry => entry.productId === params.get('product')) : 0;
+      const item = order.items?.[itemIndex];
+      const product = catalog.find(entry => entry.id === item?.productId);
+      view.context = { orderId: order.id, productId: item?.productId, itemIndex: item ? itemIndex : undefined, name: item?.name || (order.kind === 'reseller-plan' ? 'Paket reseller' : 'Pesanan'),
+        price: item?.unitPrice ?? order.total, quantity: item?.quantity, image: product?.image, slug: product?.slug,
+        specifications: (item?.specifications || []).map(entry => `${entry.name}: ${entry.label}`).join(' · ') };
+    } else if (!admin && params.get('product')) {
+      const product = catalog.find(entry => entry.id === params.get('product'));
+      if (product) view.context = { productId: product.id, name: product.name, price: product.price, image: product.image, slug: product.slug };
+    }
+    if (window.location.hash !== route) return '';
+    chatView = view;
+    const customer = inbox?.conversations.find(thread => thread.userId === selected)?.customer || orders.find(order => order.userId === selected)?.customer;
+    const conversation = base ? `<section class="chat-conversation" aria-label="Percakapan ${admin ? escapeHtml(customer.name) : 'Bacshop'}" data-chat-panel>
+      <header class="chat-header">${admin ? `<a class="chat-mobile-back chat-tool" href="#/admin/chat" aria-label="Kembali ke daftar chat">${feather('arrow-left')}</a>${avatarMark(customer)}` : '<span class="chat-store-mark">B</span>'}<div><h1>${admin ? escapeHtml(customer.name) : 'Bacshop'}</h1><p>${admin ? 'Pelanggan' : 'Chat dengan admin'}</p></div>${!admin ? '<a class="chat-header-catalog" href="#/kategori/semua">Lihat produk</a>' : ''}</header>
+      <div class="chat-transcript" data-chat-transcript role="log" aria-label="Pesan" aria-live="polite" aria-relevant="additions">${chatMessagesMarkup(view)}</div>
+      <button class="chat-new-messages" type="button" data-chat-new hidden>Pesan baru ↓</button>
+      <form class="chat-composer" data-chat-form><div class="chat-draft-attachments" data-chat-drafts>${chatContextMarkup(view.context, true)}</div>
+        <section class="chat-picker" data-chat-picker hidden aria-label="Pilih lampiran produk"><div class="chat-picker-top"><strong>Lampirkan produk</strong><button class="chat-tool" type="button" data-chat-close-picker aria-label="Tutup pilihan produk">${feather('x')}</button></div><div class="chat-picker-tabs"><button type="button" data-chat-picker-tab="catalog" aria-pressed="true">Katalog</button><button type="button" data-chat-picker-tab="orders" aria-pressed="false">${admin ? 'Pesanan pelanggan' : 'Pesanan saya'}</button></div><input type="search" data-chat-picker-search placeholder="Cari produk" aria-label="Cari produk untuk dilampirkan" /><div class="chat-picker-list" data-chat-picker-list></div></section>
+        <div class="chat-compose-row"><textarea rows="1" maxlength="4000" placeholder="Tulis pesan…" aria-label="Pesan untuk ${admin ? 'pelanggan' : 'admin'}" data-chat-text></textarea><button class="button button-primary chat-send" type="submit" aria-label="Kirim pesan" data-chat-send>${feather('send')}</button></div>
+        <div class="chat-composer-tools"><button class="chat-tool" type="button" data-chat-image-button aria-label="Lampirkan gambar" title="Lampirkan gambar">${feather('image')}</button><button class="chat-tool chat-product-tool" type="button" data-chat-product-button>${feather('package')}<span>Produk</span></button><input type="file" accept="image/png,image/jpeg,image/webp" multiple data-chat-files hidden /><small>PNG, JPG, WebP · maks. 5 MB/gambar</small></div><p class="chat-error" data-chat-error role="status" hidden></p><p class="chat-error" data-chat-connection role="status" hidden></p>
+      </form><div class="chat-drop-overlay" data-chat-drop hidden>Lepaskan gambar untuk dilampirkan</div></section>` : '<section class="chat-select-conversation"><p>Pilih percakapan untuk membalas pelanggan.</p></section>';
+    return `<div class="chat-page ${admin ? 'chat-admin' : 'chat-customer'} ${selected ? 'has-conversation' : ''}" data-chat-root>${admin ? `<aside class="chat-inbox"><header><h1>Chat pelanggan</h1><input type="search" data-chat-inbox-search aria-label="Cari pelanggan" placeholder="Cari pelanggan" /></header><div class="chat-inbox-list" data-chat-inbox-list>${chatInboxMarkup(inbox.conversations, selected)}</div></aside>` : ''}${conversation}</div>`;
+  }
+
+  function stopChatPolling() {
+    window.clearTimeout(chatPollTimer);
+    chatPollTimer = null;
+    chatView?.cleanup?.();
+    chatView = null;
+  }
+
+  function updateChatBadges(count) {
+    chatUnreadCount = count;
+    app.querySelectorAll('[data-chat-unread]').forEach(badge => { badge.textContent = count > 99 ? '99+' : String(count); badge.hidden = !count; });
+  }
+
+  function scheduleChatUnread(admin) {
+    window.clearTimeout(chatUnreadTimer);
+    const route = window.location.hash;
+    updateChatBadges(chatUnreadCount);
+    chatUnreadTimer = window.setTimeout(async () => {
+      if (window.location.hash !== route) return;
+      if (!document.hidden) try {
+        const result = await requestApi(admin ? '/api/admin/chat' : '/api/chat/unread');
+        if (window.location.hash === route) updateChatBadges(result.unread);
+      } catch { /* Next poll retries without interrupting the page. */ }
+      if (window.location.hash === route) scheduleChatUnread(admin);
+    }, 10000);
+  }
+
+  function bindChatEvents() {
+    app.querySelector('[data-chat-retry]')?.addEventListener('click', () => { void render(); });
+    const root = app.querySelector('[data-chat-root]');
+    const view = chatView;
+    if (!root || !view || view.route !== window.location.hash) return;
+    const panel = root.querySelector('[data-chat-panel]');
+    const transcript = root.querySelector('[data-chat-transcript]');
+    const form = root.querySelector('[data-chat-form]');
+    let stickingToBottom = true;
+    let readPending = false;
+    const inboxSearch = root.querySelector('[data-chat-inbox-search]');
+    const filterInbox = () => root.querySelectorAll('[data-chat-customer]').forEach(row => { row.hidden = !row.dataset.chatCustomer.includes((inboxSearch?.value || '').trim().toLocaleLowerCase('id-ID')); });
+    inboxSearch?.addEventListener('input', filterInbox);
+    const active = () => chatView === view && view.route === window.location.hash && root.isConnected;
+    const nearBottom = () => transcript && transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight < 70;
+    const error = text => { const node = root.querySelector('[data-chat-error]'); if (node) { node.textContent = text; node.hidden = !text; } };
+    const bottom = () => { stickingToBottom = true; if (transcript) transcript.scrollTop = transcript.scrollHeight; root.querySelector('[data-chat-new]')?.setAttribute('hidden', ''); };
+    const markRead = async () => {
+      if (!active() || !view.base || document.hidden || !nearBottom() || readPending) return;
+      const last = view.page.messages.at(-1)?.sequence;
+      if (!last || last <= view.readSequence) return;
+      readPending = true;
+      try {
+        await requestApi(`${view.base}/read`, { method: 'POST', body: { sequence: last } });
+        view.readSequence = last;
+        if (view.side === 'admin' && active()) {
+          const selected = view.inbox.conversations.find(thread => thread.userId === view.selected);
+          if (selected) selected.unread = 0;
+          root.querySelector('[data-chat-inbox-list]').innerHTML = chatInboxMarkup(view.inbox.conversations, view.selected);
+          filterInbox();
+          updateChatBadges(view.inbox.conversations.reduce((sum, thread) => sum + thread.unread, 0));
+        }
+        if (view.side === 'customer' && active()) updateChatBadges(0);
+      } catch { /* Leave unread until the acknowledgement succeeds. */ }
+      finally { readPending = false; }
+    };
+    const paint = (scroll = false) => {
+      if (!active() || !transcript) return;
+      const oldBottom = stickingToBottom;
+      const oldTop = transcript.scrollTop;
+      transcript.innerHTML = chatMessagesMarkup(view);
+      if (scroll || oldBottom) { bottom(); markRead(); }
+      else { transcript.scrollTop = oldTop; root.querySelector('[data-chat-new]').hidden = false; }
+    };
+    const refresh = async (scroll = false) => {
+      if (!active() || !view.base) return;
+      const latest = await requestApi(view.base);
+      if (!active()) return;
+      const combined = new Map(view.page.messages.map(message => [message.sequence, message]));
+      const lastSequence = view.page.messages.at(-1)?.sequence;
+      latest.messages.forEach(message => combined.set(message.sequence, message));
+      // Recover the whole gap after a long disconnect, not only the newest page.
+      let bridge = latest;
+      while (lastSequence && bridge.hasMore && bridge.oldestSequence > lastSequence + 1) {
+        bridge = await requestApi(`${view.base}?before=${bridge.oldestSequence}`);
+        if (!active()) return;
+        bridge.messages.forEach(message => combined.set(message.sequence, message));
+      }
+      const changed = latest.messages.at(-1)?.id !== view.page.messages.at(-1)?.id || latest.otherRead !== view.page.otherRead;
+      view.page = { ...latest, otherRead: Math.max(latest.otherRead, view.page.otherRead), messages: [...combined.values()].sort((a, b) => a.sequence - b.sequence), hasMore: lastSequence ? view.page.hasMore : latest.hasMore, oldestSequence: view.page.oldestSequence || latest.oldestSequence };
+      if (changed || scroll) paint(scroll);
+      else markRead();
+    };
+    const poll = () => {
+      chatPollTimer = window.setTimeout(async () => {
+        if (!active()) return;
+        if (!document.hidden) try {
+          await refresh();
+          if (view.side === 'admin') {
+            const inbox = await requestApi('/api/admin/chat');
+            if (active()) { view.inbox = inbox; root.querySelector('[data-chat-inbox-list]').innerHTML = chatInboxMarkup(inbox.conversations, view.selected); filterInbox(); updateChatBadges(inbox.unread); }
+          }
+          const connection = root.querySelector('[data-chat-connection]');
+          if (active() && connection) { connection.textContent = ''; connection.hidden = true; }
+        } catch { const connection = root.querySelector('[data-chat-connection]'); if (active() && connection) { connection.textContent = 'Koneksi terputus. Pesan akan dimuat kembali saat terhubung.'; connection.hidden = false; } }
+        if (active()) poll();
+      }, 3000);
+    };
+    poll();
+    if (!panel || !form) return;
+    const text = root.querySelector('[data-chat-text]');
+    const fileInput = root.querySelector('[data-chat-files]');
+    const drafts = () => {
+      root.querySelector('[data-chat-drafts]').innerHTML = `${chatContextMarkup(view.context, true)}${view.images.length ? `<div class="chat-draft-images">${view.images.map((image, index) => `<div><img src="data:${image.mimeType};base64,${image.data}" alt="Gambar yang akan dikirim" /><button class="chat-tool" type="button" data-chat-remove-image="${index}" aria-label="Hapus gambar ${index + 1}">${feather('x')}</button></div>`).join('')}</div>` : ''}`;
+    };
+    let addingImages = false;
+    const addImages = async files => {
+      if (view.sending || addingImages) return;
+      error('');
+      const selectedFiles = [...files];
+      if (selectedFiles.length + view.images.length > 3) return error('Maksimal 3 gambar per pesan.');
+      if (selectedFiles.some(file => !['image/png', 'image/jpeg', 'image/webp'].includes(file.type))) return error('Gunakan gambar PNG, JPG, atau WebP.');
+      if (selectedFiles.some(file => file.size > 5 * 1024 * 1024) || selectedFiles.reduce((sum, file) => sum + file.size, view.images.reduce((sum, image) => sum + image.size, 0)) > 10 * 1024 * 1024) return error('Maksimal 5 MB per gambar dan 10 MB per pesan.');
+      addingImages = true;
+      try {
+        const images = await Promise.all(selectedFiles.map(async file => ({ ...await filePayload(file), size: file.size })));
+        if (active()) { view.images.push(...images); view.retry = null; drafts(); }
+      } catch (failure) { if (active()) error(failure.message); }
+      finally { addingImages = false; }
+    };
+    root.querySelector('[data-chat-image-button]').addEventListener('click', () => fileInput.click());
+    fileInput.addEventListener('change', async () => { await addImages(fileInput.files); fileInput.value = ''; });
+    panel.addEventListener('paste', event => {
+      const images = [...(event.clipboardData?.items || [])].filter(item => item.kind === 'file' && item.type.startsWith('image/')).map(item => item.getAsFile()).filter(Boolean);
+      if (images.length) { event.preventDefault(); addImages(images); }
+    });
+    let dragDepth = 0;
+    panel.addEventListener('dragenter', event => { if ([...event.dataTransfer.types].includes('Files')) { event.preventDefault(); dragDepth += 1; root.querySelector('[data-chat-drop]').hidden = false; } });
+    panel.addEventListener('dragover', event => { if ([...event.dataTransfer.types].includes('Files')) { event.preventDefault(); event.dataTransfer.dropEffect = 'copy'; } });
+    panel.addEventListener('dragleave', () => { dragDepth = Math.max(0, dragDepth - 1); if (!dragDepth) root.querySelector('[data-chat-drop]').hidden = true; });
+    panel.addEventListener('drop', event => { event.preventDefault(); dragDepth = 0; root.querySelector('[data-chat-drop]').hidden = true; addImages(event.dataTransfer.files); });
+    root.addEventListener('click', event => {
+      if (view.sending) return;
+      if (event.target.closest('[data-chat-remove-context]')) { view.context = null; view.retry = null; drafts(); }
+      const remove = event.target.closest('[data-chat-remove-image]');
+      if (remove) { view.images.splice(Number(remove.dataset.chatRemoveImage), 1); view.retry = null; drafts(); }
+    });
+    const picker = root.querySelector('[data-chat-picker]');
+    const pickerSearch = root.querySelector('[data-chat-picker-search]');
+    let tab = 'catalog';
+    let choices = [];
+    const drawPicker = () => {
+      const query = pickerSearch.value.trim().toLocaleLowerCase('id-ID');
+      choices = tab === 'catalog' ? view.catalog.filter(product => !product.archived && !product.internalTestOnly).map(product => ({ productId: product.id, name: product.name, image: product.image, slug: product.slug, price: product.price })) : view.orders.filter(order => view.side !== 'admin' || order.userId === view.selected).flatMap(order => order.kind === 'reseller-plan' ? [{ orderId: order.id, name: 'Paket reseller', price: order.total }] : (order.items || []).map((item, itemIndex) => { const product = view.catalog.find(entry => entry.id === item.productId); return { orderId: order.id, productId: item.productId, itemIndex, name: item.name, image: product?.image, slug: product?.slug, price: item.unitPrice, quantity: item.quantity, specifications: (item.specifications || []).map(entry => `${entry.name}: ${entry.label}`).join(' · ') }; }));
+      root.querySelector('[data-chat-picker-list]').innerHTML = choices.map((context, index) => ({ context, index })).filter(entry => `${entry.context.name} ${entry.context.orderId || ''}`.toLocaleLowerCase('id-ID').includes(query)).map(({ context, index }) => `<button type="button" data-chat-choice="${index}">${context.image ? `<img src="${escapeHtml(context.image)}" alt="" />` : feather('package')}<span><strong>${escapeHtml(context.name)}</strong><small>${context.orderId ? `${escapeHtml(context.orderId)} · ` : ''}${rupiah(context.price)}</small></span></button>`).join('') || '<p>Tidak ada produk.</p>';
+    };
+    root.querySelector('[data-chat-product-button]').addEventListener('click', async () => {
+      picker.hidden = !picker.hidden;
+      if (!picker.hidden) {
+        drawPicker(); pickerSearch.focus();
+        if (view.side === 'customer') try { const result = await requestApi('/api/orders'); if (active()) { view.orders = result.orders; drawPicker(); } } catch (failure) { error(failure.message); }
+      }
+    });
+    root.querySelector('[data-chat-close-picker]').addEventListener('click', () => { picker.hidden = true; });
+    pickerSearch.addEventListener('input', drawPicker);
+    picker.addEventListener('click', event => {
+      if (view.sending) return;
+      const button = event.target.closest('[data-chat-picker-tab]');
+      if (button) { tab = button.dataset.chatPickerTab; picker.querySelectorAll('[data-chat-picker-tab]').forEach(node => node.setAttribute('aria-pressed', String(node === button))); drawPicker(); }
+      const choice = event.target.closest('[data-chat-choice]');
+      if (choice) { view.context = choices[Number(choice.dataset.chatChoice)]; view.retry = null; drafts(); picker.hidden = true; text.focus(); }
+    });
+    text.addEventListener('input', () => { view.retry = null; text.style.height = 'auto'; text.style.height = `${Math.min(120, text.scrollHeight)}px`; });
+    text.addEventListener('keydown', event => { if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); form.requestSubmit(); } });
+    form.addEventListener('submit', async event => {
+      event.preventDefault();
+      if (view.sending || addingImages || !active()) return;
+      if (!text.value.trim() && !view.images.length && !view.context) return;
+      const payload = view.retry || { clientMessageId: crypto.randomUUID(), text: text.value, images: view.images.map(({ mimeType, data }) => ({ mimeType, data })), context: view.context ? { productId: view.context.productId, orderId: view.context.orderId, itemIndex: view.context.itemIndex } : null };
+      view.retry = payload;
+      view.sending = true; error('');
+      const send = root.querySelector('[data-chat-send]');
+      send.disabled = true; send.setAttribute('aria-label', 'Mengirim pesan');
+      text.disabled = true;
+      try {
+        const result = await requestApi(`${view.base}/messages`, { method: 'POST', body: payload });
+        if (!active()) return;
+        if (!view.page.messages.some(message => message.id === result.message.id)) view.page.messages.push(result.message);
+        view.context = null; view.images = []; view.retry = null; text.value = ''; text.style.height = 'auto'; drafts(); picker.hidden = true; paint(true);
+        await refresh(true);
+      } catch (failure) { if (active()) error(failure.message); }
+      finally { view.sending = false; if (active()) { send.disabled = false; send.setAttribute('aria-label', 'Kirim pesan'); text.disabled = false; text.focus(); } }
+    });
+    transcript.addEventListener('scroll', () => { stickingToBottom = nearBottom(); if (stickingToBottom) { root.querySelector('[data-chat-new]').hidden = true; markRead(); } });
+    root.querySelector('[data-chat-new]').addEventListener('click', () => { bottom(); markRead(); });
+    transcript.addEventListener('load', () => { if (stickingToBottom) { bottom(); markRead(); } }, true);
+    const resizeObserver = new ResizeObserver(() => { if (active() && stickingToBottom) { bottom(); markRead(); } });
+    resizeObserver.observe(transcript);
+    view.cleanup = () => resizeObserver.disconnect();
+    transcript.addEventListener('click', async event => {
+      const button = event.target.closest('[data-chat-older]');
+      if (!button || button.disabled) return;
+      button.disabled = true;
+      try {
+        const older = await requestApi(`${view.base}?before=${view.page.oldestSequence}`);
+        if (!active()) return;
+        const height = transcript.scrollHeight;
+        const top = transcript.scrollTop;
+        stickingToBottom = false;
+        const messages = new Map([...older.messages, ...view.page.messages].map(message => [message.sequence, message]));
+        view.page.messages = [...messages.values()].sort((a, b) => a.sequence - b.sequence);
+        view.page.hasMore = older.hasMore; view.page.oldestSequence = older.oldestSequence;
+        transcript.innerHTML = chatMessagesMarkup(view);
+        transcript.scrollTop = top + transcript.scrollHeight - height;
+      } catch (failure) { if (active()) { error(failure.message); button.disabled = false; } }
+    });
+    bottom(); markRead();
   }
 
   function renderNotice(path) {
@@ -1141,6 +1427,7 @@
       '/admin/analisa': 'Analisa',
     };
     if (path.startsWith('/admin/produk')) return 'Produk';
+    if (path.startsWith('/admin/chat')) return 'Chat pelanggan';
     if (titles[path]) return titles[path];
     if (path === '/admin/pesanan') return 'Pesanan';
     return 'Ringkasan';
@@ -1155,6 +1442,7 @@
     const storeHidden = collapsed || !storeActive;
     const salesHidden = collapsed || !salesActive;
     return `${link('#/admin', 'Ringkasan', 'home', path === '/admin')}
+      <a class="admin-nav-link" data-admin-nav href="#/admin/chat" ${path.startsWith('/admin/chat') ? 'aria-current="page"' : ''}><span class="admin-nav-icon">${feather('message-circle')}</span><span class="admin-nav-label">Chat pelanggan</span><span class="chat-unread-badge" data-chat-unread hidden></span></a>
       <section class="admin-nav-group ${catalogActive ? 'is-active' : ''}" data-admin-nav-group>
         <button class="admin-nav-parent" type="button" data-admin-group-toggle aria-expanded="${!catalogHidden}" title="${collapsed ? 'Katalog' : ''}"><span class="admin-nav-icon">${feather('grid')}</span><span class="admin-nav-label">Katalog</span>${feather('chevron-right','admin-nav-chevron')}</button>
         <div class="admin-nav-children" data-admin-group-children ${catalogHidden ? 'hidden' : ''}>
@@ -1182,7 +1470,7 @@
 
   function adminOrderCard(order) {
     const fulfillmentOptions = [{ value: 'not_started', label: 'Belum dimulai' }, { value: 'processing', label: 'Diproses' }, { value: 'needs_customer_input', label: 'Menunggu data pelanggan' }, { value: 'fulfilled', label: 'Selesai' }];
-    return `<article class="admin-order-card"><div class="admin-order-head"><div><strong>${escapeHtml(order.id)}</strong><span>${escapeHtml(order.customer?.name || 'Akun tidak tersedia')} · ${escapeHtml(order.customer?.email || '')}</span></div><strong>${rupiah(order.total)}</strong></div><p>${order.kind === 'reseller-plan' ? 'Paket reseller' : order.items.map((item) => `${escapeHtml(item.name)} × ${item.quantity}${(item.specifications || []).length ? ' · ' + item.specifications.map((specification) => escapeHtml(specification.name) + ': ' + escapeHtml(specification.label)).join(', ') : ''}`).join(', ')}</p><div class="admin-order-status"><span class="status-pill">Pembayaran: ${escapeHtml(order.paymentStatus)}</span><span class="status-pill">Pemenuhan: ${escapeHtml(order.fulfillmentStatus)}</span></div>${order.paymentVerification ? `<p class="admin-verified-note">Dikonfirmasi otomatis · ${new Date(order.paymentVerification.verifiedAt).toLocaleString('id-ID')}</p>` : order.paymentStatus === 'pending' && order.paymentInitialized === false ? '<p class="admin-order-help">Pesanan tersimpan. QRIS belum dibuat pada tahap ini.</p>' : order.paymentStatus === 'pending' ? '<p class="admin-order-help">Status berubah setelah pembayaran terkonfirmasi.</p>' : ''}${order.paymentStatus === 'paid' ? `<form class="admin-fulfillment-form" data-update-fulfillment="${escapeHtml(order.id)}"><div class="admin-field"><span class="admin-field-label">Status pemenuhan</span>${customDropdown('status', 'Status pemenuhan', fulfillmentOptions, order.fulfillmentStatus, 'admin-dropdown')}</div><label>Catatan pemenuhan<input name="note" maxlength="1000" value="${escapeHtml(order.fulfillmentNote || '')}" /></label><button class="button button-small button-primary" type="submit">Simpan status</button></form>` : ''}</article>`;
+    return `<article class="admin-order-card"><div class="admin-order-head"><div><strong>${escapeHtml(order.id)}</strong><span>${escapeHtml(order.customer?.name || 'Akun tidak tersedia')} · ${escapeHtml(order.customer?.email || '')}</span></div><strong>${rupiah(order.total)}</strong></div><p>${order.kind === 'reseller-plan' ? 'Paket reseller' : order.items.map((item) => `${escapeHtml(item.name)} × ${item.quantity}${(item.specifications || []).length ? ' · ' + item.specifications.map((specification) => escapeHtml(specification.name) + ': ' + escapeHtml(specification.label)).join(', ') : ''}`).join(', ')}</p><a class="detail-chat-link" href="#/admin/chat/${encodeURIComponent(order.userId)}">${feather('message-circle')}Chat pelanggan</a><div class="admin-order-status"><span class="status-pill">Pembayaran: ${escapeHtml(order.paymentStatus)}</span><span class="status-pill">Pemenuhan: ${escapeHtml(order.fulfillmentStatus)}</span></div>${order.paymentVerification ? `<p class="admin-verified-note">Dikonfirmasi otomatis · ${new Date(order.paymentVerification.verifiedAt).toLocaleString('id-ID')}</p>` : order.paymentStatus === 'pending' && order.paymentInitialized === false ? '<p class="admin-order-help">Pesanan tersimpan. QRIS belum dibuat pada tahap ini.</p>' : order.paymentStatus === 'pending' ? '<p class="admin-order-help">Status berubah setelah pembayaran terkonfirmasi.</p>' : ''}${order.paymentStatus === 'paid' ? `<form class="admin-fulfillment-form" data-update-fulfillment="${escapeHtml(order.id)}"><div class="admin-field"><span class="admin-field-label">Status pemenuhan</span>${customDropdown('status', 'Status pemenuhan', fulfillmentOptions, order.fulfillmentStatus, 'admin-dropdown')}</div><label>Catatan pemenuhan<input name="note" maxlength="1000" value="${escapeHtml(order.fulfillmentNote || '')}" /></label><button class="button button-small button-primary" type="submit">Simpan status</button></form>` : ''}</article>`;
   }
 
   async function renderAdminPage(path) {
@@ -1195,7 +1483,8 @@
     CATEGORIES = storefront.categories;
     let content;
     const productDetailMatch = path.match(/^\/admin\/produk\/([^/]+)$/);
-    if (productDetailMatch) {
+    if (path === '/admin/chat' || path.startsWith('/admin/chat/')) content = await renderChatPage(true, path === '/admin/chat' ? '' : path.slice('/admin/chat/'.length), new URLSearchParams(), productResult.products, orderResult.orders);
+    else if (productDetailMatch) {
       const productId = safeDecode(productDetailMatch[1]);
       const selectedProduct = productResult.products.find((product) => product.id === productId);
       content = selectedProduct
@@ -1877,7 +2166,10 @@
 
   async function render() {
     stopPaymentPolling();
+    stopChatPolling();
+    window.clearTimeout(chatUnreadTimer);
     const { path } = getRoute();
+    document.body.classList.toggle('chat-mode', path === '/chat' || path === '/admin/chat' || path.startsWith('/admin/chat/'));
     if (!['/checkout', '/masuk', '/daftar'].includes(path) && checkoutItemsOverride) writeCheckoutOverride(null);
     document.body.classList.remove('admin-drawer-open');
     if (path === '/admin-preview') {
@@ -1899,7 +2191,7 @@
       adminPreviewMode = false;
       try { sessionStorage.removeItem('bacshop.admin.preview'); } catch { /* Storage is optional. */ }
     }
-    const previewBlockedRoute = path === '/masuk' || path === '/daftar' || path === '/checkout' || path === '/keranjang' || path === '/akun' || path.startsWith('/pesanan');
+    const previewBlockedRoute = path === '/masuk' || path === '/daftar' || path === '/checkout' || path === '/keranjang' || path === '/akun' || path.startsWith('/pesanan') || path === '/chat';
     if (adminPreviewMode && previewBlockedRoute) {
       showToast('Pratinjau toko hanya untuk melihat halaman. Akun dan pesanan tidak dibuka.');
       window.location.hash = '#/';
@@ -1930,7 +2222,7 @@
       } catch {
         if (getRoute().path === path) app.innerHTML = '<main class="admin-service-error"><h1>Server Bacshop belum berjalan</h1><p>Jalankan server lokal untuk membuka admin dan menyimpan produk.</p><a class="button button-primary" href="#/">Kembali ke toko</a></main>';
       }
-      if (getRoute().path === path) bindAdminEvents();
+      if (getRoute().path === path) { bindAdminEvents(); bindChatEvents(); scheduleChatUnread(true); }
       return;
     }
     if (path.startsWith('/preview/')) {
@@ -1942,6 +2234,7 @@
     document.body.classList.remove('role-mode');
     document.body.classList.toggle('has-sticky-purchase', path.startsWith('/produk/'));
     let content = await renderCustomerRoute(path, getRoute().params);
+    if (getRoute().path !== path) return;
     if (content === null) content = routeContent();
     if (content === null) {
       document.body.classList.add('is-not-found');
@@ -1955,6 +2248,8 @@
     bindHeroCarousel();
     bindEvents();
     bindCustomerEvents();
+    bindChatEvents();
+    if (currentUser && !adminPreviewMode) scheduleChatUnread(false);
     const pendingPayment = app.querySelector('[data-payment-poll="true"]');
     if (pendingPayment?.dataset.paymentOrder) schedulePaymentPolling(pendingPayment.dataset.paymentOrder);
     window.scrollTo({ top: 0, behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
