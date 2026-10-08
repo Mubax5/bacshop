@@ -58,6 +58,7 @@ const AUDIT_FILE = path.join(PRIVATE_DIR, 'audit.json');
 const CHAT_DIR = path.join(PRIVATE_DIR, 'chat');
 const CHAT_IMAGE_DIR = path.join(CHAT_DIR, 'images');
 const chatSendLimits = new Map();
+const chatEventClients = new Set();
 const UPLOAD_DIR = process.env.BACSHOP_UPLOADS_DIR || path.join(ROOT, 'assets', 'uploads');
 const SESSION_MS = 8 * 60 * 60 * 1000;
 const COOKIE = 'BacshopAdmin';
@@ -1533,6 +1534,18 @@ function chatUnread(thread, side) {
   return thread.messages.filter(message => message.sender !== side && message.sequence > (thread[`${side}Read`] || 0)).length;
 }
 
+function publishChatEvent(thread, type, details = {}) {
+  for (const client of chatEventClients) {
+    if (client.res.destroyed || client.res.writableEnded) continue;
+    if (client.side === 'customer' && client.userId !== thread.userId) continue;
+    const unread = chatUnread(thread, client.side);
+    const event = { userId: thread.userId, unread, ...details };
+    try {
+      client.res.write(`id: ${thread.userId}-${thread.messages.length}-${crypto.randomUUID()}\nevent: ${type}\ndata: ${JSON.stringify(event)}\n\n`);
+    } catch { /* Connection close triggers the response close listener below. */ }
+  }
+}
+
 function chatPage(thread, side, before) {
   const cursor = before === null ? Infinity : Number(before);
   if (before !== null && (!Number.isSafeInteger(cursor) || cursor < 1)) throw Object.assign(new Error('Posisi pesan tidak valid.'), { status: 400 });
@@ -1557,7 +1570,7 @@ function chatContext(input, userId) {
     const product = item && readProducts().find(entry => entry.id === item.productId);
     return { orderId: order.id, productId: item?.productId || null,
       name: item?.name || (order.kind === 'reseller-plan' ? 'Paket reseller' : 'Pesanan'),
-      image: product?.image || '', slug: product?.slug || '', quantity: item?.quantity || null,
+      image: item?.image || product?.image || '', slug: item?.slug || product?.slug || '', quantity: item?.quantity || null,
       price: item?.unitPrice ?? order.total,
       specifications: (item?.specifications || []).map(entry => `${entry.name}: ${entry.label}`).join(' · ') };
   }
@@ -1618,6 +1631,7 @@ async function sendChat(req, res, userId, side) {
     for (const file of written) try { fs.unlinkSync(file); } catch { /* Preserve original error. */ }
     throw error;
   }
+  publishChatEvent(thread, 'chat-message', { message });
   return json(res, 201, { message });
 }
 
@@ -1626,6 +1640,17 @@ async function handleChatApi(req, res, url) {
   const admin = requireAdmin(req);
   const user = activeUser(req);
   if (isAdmin && !admin || !isAdmin && !user && !admin) return json(res, 401, { error: 'Masuk untuk membuka chat.' });
+  if (req.method === 'GET' && url.pathname === '/api/chat/events') {
+    const client = { res, side: admin ? 'admin' : 'customer', userId: user?.id || '' };
+    res.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-cache, no-transform',
+      Connection: 'keep-alive', 'X-Accel-Buffering': 'no', ...standardSecurityHeaders() });
+    res.write('retry: 2000\n: terhubung\n\n');
+    chatEventClients.add(client);
+    const heartbeat = setInterval(() => { if (!res.destroyed && !res.writableEnded) res.write(': aktif\n\n'); }, 20000);
+    heartbeat.unref();
+    res.on('close', () => { clearInterval(heartbeat); chatEventClients.delete(client); });
+    return;
+  }
   const imageMatch = url.pathname.match(/^\/api\/chat\/images\/([a-f0-9]{64})\/([a-f0-9-]{36})$/);
   if (imageMatch && ['GET', 'HEAD'].includes(req.method)) {
     const thread = readJson(path.join(CHAT_DIR, `${imageMatch[1]}.json`), null);
@@ -1668,6 +1693,7 @@ async function handleChatApi(req, res, url) {
     thread[`${side}Read`] = Math.max(thread[`${side}Read`] || 0, sequence);
     fs.mkdirSync(CHAT_DIR, { recursive: true, mode: 0o700 });
     writeJsonAtomic(chatFile(userId), thread);
+    publishChatEvent(thread, 'chat-read', { sequence, reader: side });
     return json(res, 200, { unread: chatUnread(thread, side) });
   }
   return json(res, 405, { error: 'Permintaan chat tidak didukung.' });
@@ -1921,6 +1947,7 @@ async function handleApi(req, res, url) {
           productId: product.id,
           name: product.name,
           slug: product.slug,
+          image: product.image || '',
           quantity,
           specifications: selection.specifications,
           unitPrice,
@@ -2261,6 +2288,8 @@ const server = http.createServer(async (req, res) => {
 server.listen(PORT, HOST, () => console.log(`Bacshop berjalan di http://${HOST}:${PORT}/`));
 
 function stop() {
+  for (const client of chatEventClients) client.res.end();
+  chatEventClients.clear();
   server.close(() => process.exit(0));
 }
 process.on('SIGINT', stop);

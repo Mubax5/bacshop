@@ -23,7 +23,7 @@ Data akun, sesi, pesanan, konten toko, dan audit admin disimpan di `.bacshop-pri
 - Gambar PNG/JPG/WebP dapat dikirim melalui pemilih file, paste clipboard, dan drag-and-drop. Maksimal 3 gambar per pesan, 5 MB per gambar, dan 10 MB total. Enter mengirim, Shift+Enter membuat baris baru.
 - Percakapan tersimpan di `BACSHOP_DATA_DIR/chat/` (default `.bacshop-private/chat/`), termasuk gambar privat di subfolder `images/`. Hanya pemilik percakapan dan admin yang bisa mengaksesnya. Backup folder data ini bersama data akun/pesanan; jangan masukkan gambar chat ke aset publik atau Git.
 - Pesan memakai waktu UTC dari server dan urutan pesan tersendiri. Jam dan pemisah hari/tanggal mengikuti zona waktu perangkat yang membukanya. Pemisah tanggal hanya berasal dari pesan yang berhasil tersimpan, bukan draft.
-- Pesan baru diperiksa setiap 3 detik saat halaman chat terlihat; badge navigasi diperiksa setiap 10 detik. Draft tetap utuh saat polling. Pengiriman dapat diulang tanpa membuat pesan ganda, dan riwayat lama tersedia melalui **Muat pesan sebelumnya**. Batas pengiriman 30 pesan/menit per sisi percakapan.
+- Pesan baru dan tanda dibaca diperbarui realtime melalui koneksi EventSource terautentikasi, dengan pemeriksaan cadangan saat koneksi terputus. Status pesan menunjukkan **Terkirim** dan **Dibaca**; bila pengiriman gagal, draft tetap tersedia dengan tombol **Kirim ulang**. Bunyi notifikasi pesan masuk aktif secara bawaan dan dapat dimatikan dari header chat. Batas pengiriman 30 pesan/menit per sisi percakapan.
 
 ### Kredensial pembayaran
 

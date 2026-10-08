@@ -93,6 +93,10 @@
   let chatView = null;
   let chatUnreadTimer;
   let chatUnreadCount = 0;
+  let chatEventSource = null;
+  let chatEventSide = '';
+  let chatAudioContext = null;
+  let chatSoundEnabled = (() => { try { return localStorage.getItem('bacshop-chat-sound') !== 'off'; } catch { return true; } })();
 
   const rupiah = (value) => new Intl.NumberFormat('id-ID', {
     style: 'currency', currency: 'IDR', maximumFractionDigits: 0,
@@ -101,6 +105,77 @@
   function feather(name, className = '') {
     return `<svg class="feather-icon ${className}" aria-hidden="true" focusable="false"><use href="./assets/feather.svg#${name}"></use></svg>`;
   }
+
+  function playChatNotification() {
+    if (!chatSoundEnabled) return;
+    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContextClass) return;
+    try {
+      chatAudioContext ||= new AudioContextClass();
+      if (chatAudioContext.state === 'suspended') void chatAudioContext.resume().catch(() => {});
+      const start = chatAudioContext.currentTime;
+      [660, 880].forEach((frequency, index) => {
+        const oscillator = chatAudioContext.createOscillator();
+        const volume = chatAudioContext.createGain();
+        const at = start + index * 0.11;
+        oscillator.type = 'sine'; oscillator.frequency.value = frequency;
+        volume.gain.setValueAtTime(0.0001, at);
+        volume.gain.exponentialRampToValueAtTime(0.07, at + 0.015);
+        volume.gain.exponentialRampToValueAtTime(0.0001, at + 0.09);
+        oscillator.connect(volume); volume.connect(chatAudioContext.destination);
+        oscillator.start(at); oscillator.stop(at + 0.1);
+      });
+    } catch { /* Audio is optional when the browser blocks playback. */ }
+  }
+
+  function setChatEventStream(side) {
+    if (!side) {
+      chatEventSource?.close(); chatEventSource = null; chatEventSide = '';
+      return;
+    }
+    if (chatEventSource && chatEventSide === side && chatEventSource.readyState !== EventSource.CLOSED) return;
+    chatEventSource?.close(); chatEventSide = side;
+    if (!('EventSource' in window)) { chatEventSource = null; return; }
+    const source = new EventSource('/api/chat/events');
+    chatEventSource = source;
+    source.onopen = () => {
+      app.querySelector('[data-chat-connection]')?.setAttribute('hidden', '');
+      void requestApi(side === 'admin' ? '/api/admin/chat' : '/api/chat/unread').then(result => updateChatBadges(result.unread)).catch(() => {});
+      document.dispatchEvent(new CustomEvent('bacshop-chat-reconnected', { detail: { side } }));
+    };
+    source.onerror = () => {
+      const connection = app.querySelector('[data-chat-connection]');
+      if (connection) { connection.textContent = 'Koneksi realtime terputus. Pesan akan dicoba lagi otomatis.'; connection.hidden = false; }
+      if (source.readyState === EventSource.CLOSED && chatEventSource === source) chatEventSource = null;
+    };
+    source.addEventListener('chat-message', event => {
+      let detail;
+      try { detail = JSON.parse(event.data); } catch { return; }
+      if (!detail.message) return;
+      if (detail.message.sender !== side) playChatNotification();
+      if (side === 'customer') updateChatBadges(detail.unread || 0);
+      else void requestApi('/api/admin/chat').then(result => updateChatBadges(result.unread)).catch(() => {});
+      document.dispatchEvent(new CustomEvent('bacshop-chat-message', { detail: { ...detail, side } }));
+    });
+    source.addEventListener('chat-read', event => {
+      let detail;
+      try { detail = JSON.parse(event.data); } catch { return; }
+      if (side === 'customer') updateChatBadges(detail.unread || 0);
+      else void requestApi('/api/admin/chat').then(result => updateChatBadges(result.unread)).catch(() => {});
+      document.dispatchEvent(new CustomEvent('bacshop-chat-read', { detail: { ...detail, side } }));
+    });
+  }
+
+  document.addEventListener('pointerdown', () => {
+    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+    try { if (AudioContextClass) chatAudioContext ||= new AudioContextClass(); } catch { /* Audio is optional. */ }
+    if (chatAudioContext?.state === 'suspended') void chatAudioContext.resume().catch(() => {});
+  }, { capture: true });
+  document.addEventListener('keydown', () => {
+    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+    try { if (AudioContextClass) chatAudioContext ||= new AudioContextClass(); } catch { /* Audio is optional. */ }
+    if (chatAudioContext?.state === 'suspended') void chatAudioContext.resume().catch(() => {});
+  }, { capture: true });
 
   function avatarMark(user) {
     const content = user.avatarUrl ? `<img src="${escapeHtml(user.avatarUrl)}" alt="" />` : escapeHtml(user.name.slice(0, 1).toLocaleUpperCase('id-ID'));
@@ -850,7 +925,7 @@
     if (!context) return '';
     const orderLink = context.orderId ? `#/pesanan/${encodeURIComponent(context.orderId)}` : '';
     const href = chatView?.side === 'admin' && context.orderId ? '#/admin/pesanan' : orderLink || (context.slug ? `#/produk/${encodeURIComponent(context.slug)}` : '');
-    const content = `${context.image ? `<img src="${escapeHtml(context.image)}" alt="" />` : `<span class="chat-product-placeholder">${feather('package')}</span>`}<span><small>${context.orderId ? `Pesanan ${escapeHtml(context.orderId)}` : 'Produk'}</small><strong>${escapeHtml(context.name)}</strong>${context.specifications ? `<small>${escapeHtml(context.specifications)}</small>` : ''}<span>${context.quantity ? `${context.quantity} × ` : ''}${rupiah(context.price || 0)}</span></span>`;
+    const content = `${context.image ? `<img src="${escapeHtml(context.image)}" alt="" data-chat-product-image />` : `<span class="chat-product-placeholder">${feather('package')}</span>`}<span><small>${context.orderId ? `Pesanan ${escapeHtml(context.orderId)}` : 'Produk'}</small><strong>${escapeHtml(context.name)}</strong>${context.specifications ? `<small>${escapeHtml(context.specifications)}</small>` : ''}<span>${context.quantity ? `${context.quantity} × ` : ''}${rupiah(context.price || 0)}</span></span>`;
     return `<div class="chat-product-card">${!draft && href ? `<a href="${escapeHtml(href)}">${content}</a>` : `<div>${content}</div>`}${draft ? `<button class="chat-tool" type="button" data-chat-remove-context aria-label="Hapus lampiran produk">${feather('x')}</button>` : ''}</div>`;
   }
 
@@ -886,7 +961,7 @@
       const item = order.items?.[itemIndex];
       const product = catalog.find(entry => entry.id === item?.productId);
       view.context = { orderId: order.id, productId: item?.productId, itemIndex: item ? itemIndex : undefined, name: item?.name || (order.kind === 'reseller-plan' ? 'Paket reseller' : 'Pesanan'),
-        price: item?.unitPrice ?? order.total, quantity: item?.quantity, image: product?.image, slug: product?.slug,
+        price: item?.unitPrice ?? order.total, quantity: item?.quantity, image: item?.image || product?.image, slug: item?.slug || product?.slug,
         specifications: (item?.specifications || []).map(entry => `${entry.name}: ${entry.label}`).join(' · ') };
     } else if (!admin && params.get('product')) {
       const product = catalog.find(entry => entry.id === params.get('product'));
@@ -895,14 +970,14 @@
     if (window.location.hash !== route) return '';
     chatView = view;
     const customer = inbox?.conversations.find(thread => thread.userId === selected)?.customer || orders.find(order => order.userId === selected)?.customer;
-    const conversation = base ? `<section class="chat-conversation" aria-label="Percakapan ${admin ? escapeHtml(customer.name) : 'Bacshop'}" data-chat-panel>
-      <header class="chat-header">${admin ? `<a class="chat-mobile-back chat-tool" href="#/admin/chat" aria-label="Kembali ke daftar chat">${feather('arrow-left')}</a>${avatarMark(customer)}` : '<span class="chat-store-mark">B</span>'}<div><h1>${admin ? escapeHtml(customer.name) : 'Bacshop'}</h1><p>${admin ? 'Pelanggan' : 'Chat dengan admin'}</p></div>${!admin ? '<a class="chat-header-catalog" href="#/kategori/semua">Lihat produk</a>' : ''}</header>
+    const conversation = base ? `<section class="chat-conversation" aria-label="${admin ? `Percakapan ${escapeHtml(customer.name)}` : 'Chat dengan seller'}" data-chat-panel>
+      <header class="chat-header">${admin ? `<a class="chat-mobile-back chat-tool" href="#/admin/chat" aria-label="Kembali ke daftar chat">${feather('arrow-left')}</a>${avatarMark(customer)}` : ''}<div><h1>${admin ? escapeHtml(customer.name) : 'Chat dengan seller'}</h1>${admin ? '<p>Pelanggan</p>' : ''}</div>${!admin ? '<a class="chat-header-catalog" href="#/kategori/semua">Lihat produk</a>' : ''}<button class="chat-tool chat-sound-toggle" type="button" data-chat-sound aria-label="${chatSoundEnabled ? 'Matikan' : 'Aktifkan'} bunyi notifikasi" aria-pressed="${chatSoundEnabled}">${feather(chatSoundEnabled ? 'volume-2' : 'volume-x')}</button></header>
       <div class="chat-transcript" data-chat-transcript role="log" aria-label="Pesan" aria-live="polite" aria-relevant="additions">${chatMessagesMarkup(view)}</div>
       <button class="chat-new-messages" type="button" data-chat-new hidden>Pesan baru ↓</button>
       <form class="chat-composer" data-chat-form><div class="chat-draft-attachments" data-chat-drafts>${chatContextMarkup(view.context, true)}</div>
         <section class="chat-picker" data-chat-picker hidden aria-label="Pilih lampiran produk"><div class="chat-picker-top"><strong>Lampirkan produk</strong><button class="chat-tool" type="button" data-chat-close-picker aria-label="Tutup pilihan produk">${feather('x')}</button></div><div class="chat-picker-tabs"><button type="button" data-chat-picker-tab="catalog" aria-pressed="true">Katalog</button><button type="button" data-chat-picker-tab="orders" aria-pressed="false">${admin ? 'Pesanan pelanggan' : 'Pesanan saya'}</button></div><input type="search" data-chat-picker-search placeholder="Cari produk" aria-label="Cari produk untuk dilampirkan" /><div class="chat-picker-list" data-chat-picker-list></div></section>
-        <div class="chat-compose-row"><textarea rows="1" maxlength="4000" placeholder="Tulis pesan…" aria-label="Pesan untuk ${admin ? 'pelanggan' : 'admin'}" data-chat-text></textarea><button class="button button-primary chat-send" type="submit" aria-label="Kirim pesan" data-chat-send>${feather('send')}</button></div>
-        <div class="chat-composer-tools"><button class="chat-tool" type="button" data-chat-image-button aria-label="Lampirkan gambar" title="Lampirkan gambar">${feather('image')}</button><button class="chat-tool chat-product-tool" type="button" data-chat-product-button>${feather('package')}<span>Produk</span></button><input type="file" accept="image/png,image/jpeg,image/webp" multiple data-chat-files hidden /><small>PNG, JPG, WebP · maks. 5 MB/gambar</small></div><p class="chat-error" data-chat-error role="status" hidden></p><p class="chat-error" data-chat-connection role="status" hidden></p>
+        <div class="chat-compose-row"><button class="chat-tool" type="button" data-chat-image-button aria-label="Lampirkan gambar" title="Lampirkan gambar">${feather('image')}</button><button class="chat-tool" type="button" data-chat-product-button aria-label="Lampirkan produk" title="Lampirkan produk">${feather('package')}</button><input type="file" accept="image/png,image/jpeg,image/webp" multiple data-chat-files hidden /><textarea rows="1" maxlength="4000" placeholder="Tulis pesan…" aria-label="Pesan untuk ${admin ? 'pelanggan' : 'seller'}" data-chat-text></textarea><button class="button button-primary chat-send" type="submit" aria-label="Kirim pesan" data-chat-send>${feather('send')}</button></div>
+        <p class="chat-send-status" data-chat-send-status role="status" aria-live="polite" hidden></p><p class="chat-error" data-chat-error role="status" hidden></p><p class="chat-error" data-chat-connection role="status" hidden></p>
       </form><div class="chat-drop-overlay" data-chat-drop hidden>Lepaskan gambar untuk dilampirkan</div></section>` : '<section class="chat-select-conversation"><p>Pilih percakapan untuk membalas pelanggan.</p></section>';
     return `<div class="chat-page ${admin ? 'chat-admin' : 'chat-customer'} ${selected ? 'has-conversation' : ''}" data-chat-root>${admin ? `<aside class="chat-inbox"><header><h1>Chat pelanggan</h1><input type="search" data-chat-inbox-search aria-label="Cari pelanggan" placeholder="Cari pelanggan" /></header><div class="chat-inbox-list" data-chat-inbox-list>${chatInboxMarkup(inbox.conversations, selected)}</div></aside>` : ''}${conversation}</div>`;
   }
@@ -925,12 +1000,12 @@
     updateChatBadges(chatUnreadCount);
     chatUnreadTimer = window.setTimeout(async () => {
       if (window.location.hash !== route) return;
-      if (!document.hidden) try {
+      if (!document.hidden && chatEventSource?.readyState !== 1) try {
         const result = await requestApi(admin ? '/api/admin/chat' : '/api/chat/unread');
         if (window.location.hash === route) updateChatBadges(result.unread);
       } catch { /* Next poll retries without interrupting the page. */ }
       if (window.location.hash === route) scheduleChatUnread(admin);
-    }, 10000);
+    }, 15000);
   }
 
   function bindChatEvents() {
@@ -949,6 +1024,13 @@
     const active = () => chatView === view && view.route === window.location.hash && root.isConnected;
     const nearBottom = () => transcript && transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight < 70;
     const error = text => { const node = root.querySelector('[data-chat-error]'); if (node) { node.textContent = text; node.hidden = !text; } };
+    const delivery = (text, failed = false) => {
+      const node = root.querySelector('[data-chat-send-status]');
+      if (!node) return;
+      node.hidden = !text;
+      node.innerHTML = failed ? 'Gagal dikirim. <button class="chat-retry-send" type="button" data-chat-resend>Kirim ulang</button>' : '';
+      if (!failed) node.textContent = text;
+    };
     const bottom = () => { stickingToBottom = true; if (transcript) transcript.scrollTop = transcript.scrollHeight; root.querySelector('[data-chat-new]')?.setAttribute('hidden', ''); };
     const markRead = async () => {
       if (!active() || !view.base || document.hidden || !nearBottom() || readPending) return;
@@ -996,23 +1078,53 @@
       if (changed || scroll) paint(scroll);
       else markRead();
     };
+    const refreshInbox = async () => {
+      if (view.side !== 'admin' || !active()) return;
+      const inbox = await requestApi('/api/admin/chat');
+      if (!active()) return;
+      view.inbox = inbox;
+      const list = root.querySelector('[data-chat-inbox-list]');
+      if (list) { list.innerHTML = chatInboxMarkup(inbox.conversations, view.selected); filterInbox(); }
+      updateChatBadges(inbox.unread);
+    };
+    const onChatMessage = event => {
+      const detail = event.detail;
+      if (!active() || !detail?.userId) return;
+      if (view.side === 'admin') {
+        void refreshInbox().catch(() => {});
+        if (detail.userId === view.selected) void refresh().catch(() => {});
+      } else void refresh().catch(() => {});
+    };
+    const onChatRead = event => {
+      if (!active() || event.detail?.userId !== (view.side === 'admin' ? view.selected : view.page?.userId)) return;
+      void refresh().catch(() => {});
+      if (view.side === 'admin') void refreshInbox().catch(() => {});
+    };
+    const onChatReconnect = event => {
+      if (!active() || event.detail?.side !== view.side) return;
+      if (view.side === 'admin') void refreshInbox().catch(() => {});
+      if (view.base) void refresh().catch(() => {});
+    };
+    document.addEventListener('bacshop-chat-message', onChatMessage);
+    document.addEventListener('bacshop-chat-read', onChatRead);
+    document.addEventListener('bacshop-chat-reconnected', onChatReconnect);
     const poll = () => {
       chatPollTimer = window.setTimeout(async () => {
         if (!active()) return;
-        if (!document.hidden) try {
+        if (!document.hidden && chatEventSource?.readyState !== 1) try {
           await refresh();
-          if (view.side === 'admin') {
-            const inbox = await requestApi('/api/admin/chat');
-            if (active()) { view.inbox = inbox; root.querySelector('[data-chat-inbox-list]').innerHTML = chatInboxMarkup(inbox.conversations, view.selected); filterInbox(); updateChatBadges(inbox.unread); }
-          }
+          if (view.side === 'admin') await refreshInbox();
           const connection = root.querySelector('[data-chat-connection]');
           if (active() && connection) { connection.textContent = ''; connection.hidden = true; }
         } catch { const connection = root.querySelector('[data-chat-connection]'); if (active() && connection) { connection.textContent = 'Koneksi terputus. Pesan akan dimuat kembali saat terhubung.'; connection.hidden = false; } }
         if (active()) poll();
-      }, 3000);
+      }, 15000);
     };
     poll();
-    if (!panel || !form) return;
+    if (!panel || !form) {
+      view.cleanup = () => { document.removeEventListener('bacshop-chat-message', onChatMessage); document.removeEventListener('bacshop-chat-read', onChatRead); document.removeEventListener('bacshop-chat-reconnected', onChatReconnect); };
+      return;
+    }
     const text = root.querySelector('[data-chat-text]');
     const fileInput = root.querySelector('[data-chat-files]');
     const drafts = () => {
@@ -1029,7 +1141,7 @@
       addingImages = true;
       try {
         const images = await Promise.all(selectedFiles.map(async file => ({ ...await filePayload(file), size: file.size })));
-        if (active()) { view.images.push(...images); view.retry = null; drafts(); }
+        if (active()) { view.images.push(...images); view.retry = null; delivery(''); drafts(); }
       } catch (failure) { if (active()) error(failure.message); }
       finally { addingImages = false; }
     };
@@ -1045,10 +1157,20 @@
     panel.addEventListener('dragleave', () => { dragDepth = Math.max(0, dragDepth - 1); if (!dragDepth) root.querySelector('[data-chat-drop]').hidden = true; });
     panel.addEventListener('drop', event => { event.preventDefault(); dragDepth = 0; root.querySelector('[data-chat-drop]').hidden = true; addImages(event.dataTransfer.files); });
     root.addEventListener('click', event => {
+      const sound = event.target.closest('[data-chat-sound]');
+      if (sound) {
+        chatSoundEnabled = !chatSoundEnabled;
+        try { localStorage.setItem('bacshop-chat-sound', chatSoundEnabled ? 'on' : 'off'); } catch { /* Preference is optional. */ }
+        sound.setAttribute('aria-pressed', String(chatSoundEnabled));
+        sound.setAttribute('aria-label', `${chatSoundEnabled ? 'Matikan' : 'Aktifkan'} bunyi notifikasi`);
+        sound.innerHTML = feather(chatSoundEnabled ? 'volume-2' : 'volume-x');
+        return;
+      }
+      if (event.target.closest('[data-chat-resend]')) { form.requestSubmit(); return; }
       if (view.sending) return;
-      if (event.target.closest('[data-chat-remove-context]')) { view.context = null; view.retry = null; drafts(); }
+      if (event.target.closest('[data-chat-remove-context]')) { view.context = null; view.retry = null; delivery(''); drafts(); }
       const remove = event.target.closest('[data-chat-remove-image]');
-      if (remove) { view.images.splice(Number(remove.dataset.chatRemoveImage), 1); view.retry = null; drafts(); }
+      if (remove) { view.images.splice(Number(remove.dataset.chatRemoveImage), 1); view.retry = null; delivery(''); drafts(); }
     });
     const picker = root.querySelector('[data-chat-picker]');
     const pickerSearch = root.querySelector('[data-chat-picker-search]');
@@ -1056,7 +1178,7 @@
     let choices = [];
     const drawPicker = () => {
       const query = pickerSearch.value.trim().toLocaleLowerCase('id-ID');
-      choices = tab === 'catalog' ? view.catalog.filter(product => !product.archived && !product.internalTestOnly).map(product => ({ productId: product.id, name: product.name, image: product.image, slug: product.slug, price: product.price })) : view.orders.filter(order => view.side !== 'admin' || order.userId === view.selected).flatMap(order => order.kind === 'reseller-plan' ? [{ orderId: order.id, name: 'Paket reseller', price: order.total }] : (order.items || []).map((item, itemIndex) => { const product = view.catalog.find(entry => entry.id === item.productId); return { orderId: order.id, productId: item.productId, itemIndex, name: item.name, image: product?.image, slug: product?.slug, price: item.unitPrice, quantity: item.quantity, specifications: (item.specifications || []).map(entry => `${entry.name}: ${entry.label}`).join(' · ') }; }));
+      choices = tab === 'catalog' ? view.catalog.filter(product => !product.archived && !product.internalTestOnly).map(product => ({ productId: product.id, name: product.name, image: product.image, slug: product.slug, price: product.price })) : view.orders.filter(order => view.side !== 'admin' || order.userId === view.selected).flatMap(order => order.kind === 'reseller-plan' ? [{ orderId: order.id, name: 'Paket reseller', price: order.total }] : (order.items || []).map((item, itemIndex) => { const product = view.catalog.find(entry => entry.id === item.productId); return { orderId: order.id, productId: item.productId, itemIndex, name: item.name, image: item.image || product?.image, slug: item.slug || product?.slug, price: item.unitPrice, quantity: item.quantity, specifications: (item.specifications || []).map(entry => `${entry.name}: ${entry.label}`).join(' · ') }; }));
       root.querySelector('[data-chat-picker-list]').innerHTML = choices.map((context, index) => ({ context, index })).filter(entry => `${entry.context.name} ${entry.context.orderId || ''}`.toLocaleLowerCase('id-ID').includes(query)).map(({ context, index }) => `<button type="button" data-chat-choice="${index}">${context.image ? `<img src="${escapeHtml(context.image)}" alt="" />` : feather('package')}<span><strong>${escapeHtml(context.name)}</strong><small>${context.orderId ? `${escapeHtml(context.orderId)} · ` : ''}${rupiah(context.price)}</small></span></button>`).join('') || '<p>Tidak ada produk.</p>';
     };
     root.querySelector('[data-chat-product-button]').addEventListener('click', async () => {
@@ -1073,9 +1195,9 @@
       const button = event.target.closest('[data-chat-picker-tab]');
       if (button) { tab = button.dataset.chatPickerTab; picker.querySelectorAll('[data-chat-picker-tab]').forEach(node => node.setAttribute('aria-pressed', String(node === button))); drawPicker(); }
       const choice = event.target.closest('[data-chat-choice]');
-      if (choice) { view.context = choices[Number(choice.dataset.chatChoice)]; view.retry = null; drafts(); picker.hidden = true; text.focus(); }
+      if (choice) { view.context = choices[Number(choice.dataset.chatChoice)]; view.retry = null; delivery(''); drafts(); picker.hidden = true; text.focus(); }
     });
-    text.addEventListener('input', () => { view.retry = null; text.style.height = 'auto'; text.style.height = `${Math.min(120, text.scrollHeight)}px`; });
+    text.addEventListener('input', () => { view.retry = null; delivery(''); text.style.height = 'auto'; text.style.height = `${Math.min(120, text.scrollHeight)}px`; });
     text.addEventListener('keydown', event => { if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); form.requestSubmit(); } });
     form.addEventListener('submit', async event => {
       event.preventDefault();
@@ -1083,7 +1205,7 @@
       if (!text.value.trim() && !view.images.length && !view.context) return;
       const payload = view.retry || { clientMessageId: crypto.randomUUID(), text: text.value, images: view.images.map(({ mimeType, data }) => ({ mimeType, data })), context: view.context ? { productId: view.context.productId, orderId: view.context.orderId, itemIndex: view.context.itemIndex } : null };
       view.retry = payload;
-      view.sending = true; error('');
+      view.sending = true; error(''); delivery('Mengirim…');
       const send = root.querySelector('[data-chat-send]');
       send.disabled = true; send.setAttribute('aria-label', 'Mengirim pesan');
       text.disabled = true;
@@ -1092,8 +1214,9 @@
         if (!active()) return;
         if (!view.page.messages.some(message => message.id === result.message.id)) view.page.messages.push(result.message);
         view.context = null; view.images = []; view.retry = null; text.value = ''; text.style.height = 'auto'; drafts(); picker.hidden = true; paint(true);
+        delivery('');
         await refresh(true);
-      } catch (failure) { if (active()) error(failure.message); }
+      } catch (failure) { if (active()) { delivery('Gagal dikirim.', true); error(failure.message); } }
       finally { view.sending = false; if (active()) { send.disabled = false; send.setAttribute('aria-label', 'Kirim pesan'); text.disabled = false; text.focus(); } }
     });
     transcript.addEventListener('scroll', () => { stickingToBottom = nearBottom(); if (stickingToBottom) { root.querySelector('[data-chat-new]').hidden = true; markRead(); } });
@@ -1101,7 +1224,7 @@
     transcript.addEventListener('load', () => { if (stickingToBottom) { bottom(); markRead(); } }, true);
     const resizeObserver = new ResizeObserver(() => { if (active() && stickingToBottom) { bottom(); markRead(); } });
     resizeObserver.observe(transcript);
-    view.cleanup = () => resizeObserver.disconnect();
+    view.cleanup = () => { resizeObserver.disconnect(); document.removeEventListener('bacshop-chat-message', onChatMessage); document.removeEventListener('bacshop-chat-read', onChatRead); document.removeEventListener('bacshop-chat-reconnected', onChatReconnect); };
     transcript.addEventListener('click', async event => {
       const button = event.target.closest('[data-chat-older]');
       if (!button || button.disabled) return;
@@ -2222,10 +2345,14 @@
       } catch {
         if (getRoute().path === path) app.innerHTML = '<main class="admin-service-error"><h1>Server Bacshop belum berjalan</h1><p>Jalankan server lokal untuk membuka admin dan menyimpan produk.</p><a class="button button-primary" href="#/">Kembali ke toko</a></main>';
       }
-      if (getRoute().path === path) { bindAdminEvents(); bindChatEvents(); scheduleChatUnread(true); }
+      if (getRoute().path === path) {
+        setChatEventStream(app.querySelector('[data-admin-shell]') ? 'admin' : null);
+        bindAdminEvents(); bindChatEvents(); scheduleChatUnread(true);
+      }
       return;
     }
     if (path.startsWith('/preview/')) {
+      setChatEventStream(null);
       document.body.classList.remove('role-mode', 'has-sticky-purchase');
       document.body.classList.add('is-not-found');
       app.innerHTML = notFound();
@@ -2244,6 +2371,7 @@
     const authRoute = path === '/masuk' || path === '/daftar';
     document.body.classList.toggle('auth-mode', authRoute);
     app.innerHTML = authRoute ? authShell(content, path) : shell(content, path);
+    setChatEventStream(currentUser && !adminPreviewMode ? 'customer' : null);
     updateCartCounts();
     bindHeroCarousel();
     bindEvents();
